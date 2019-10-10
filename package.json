@@ -1,0 +1,23 @@
+{
+  "name": "marriage-card-game",
+  "version": "1.0.0",
+  "description": "online multiplayer marriage card game",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node server/index.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Pkoiralap/marriage-card-game.git"
+  },
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/Pkoiralap/marriage-card-game/issues"
+  },
+  "homepage": "https://github.com/Pkoiralap/marriage-card-game#readme",
+  "dependencies": {
+    "@hapi/hapi": "18.4.0"
+  }
+}
