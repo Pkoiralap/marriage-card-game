@@ -7,29 +7,52 @@ const suits = {
     'DIAMOND': 4,
 };
 
-const numbers = [
-    'ACE',
-    'ONE',
-    'TWO',
-    'THREE',
-    'FOUR',
-    'FIVE',
-    'SIX',
-    'SEVEN',
-    'EIGHT',
-    'NINE',
-    'TEN',
-    'JACK',
-    'QUEEN',
-    'KING',
-];
+const numbers = {
+    'ACE': 1,
+    'TWO': 2,
+    'THREE': 3,
+    'FOUR': 4,
+    'FIVE': 5,
+    'SIX': 6,
+    'SEVEN': 7,
+    'EIGHT': 8,
+    'NINE': 9,
+    'TEN': 10,
+    'JACK': 11,
+    'QUEEN': 12,
+    'KING': 13,
+    'POSTACE': 14,
+};
 
 class Card {
-    constructor(suit, number, jocker) {
+    constructor(suit, number, jocker, player) {
         this.cardID = UUID.v4();
-        this.number = number;
+        if (typeof number === 'string') {
+            this.number = number;
+        } else {
+            Object.keys(numbers).forEach(key => {
+                if (numbers[key] === number) {
+                    this.number = key;
+                    return;
+                }
+            });
+        }
         this.suit = suit;
+        this.player = player;
         this.jocker = jocker;
+    }
+
+    setMaal(maal) {
+        // maal is also a jocker
+        this.setJoker();
+
+        // maal is the value of it
+        // maal of 2 points, 3 points or 5 points
+        this.maal = maal; 
+    }
+
+    setJoker() {
+        this.maalJoker = true;
     }
 
     display() {
@@ -42,6 +65,10 @@ class CardStack {
         this.cards = cards || [];
     }
 
+    __findCardIndex(card) {
+        return this.cards.map(item => item.UUID).indexOf(card.UUID);
+    }
+
     length() {
         return this.cards.length;
     }
@@ -51,10 +78,11 @@ class CardStack {
     }
 
     remove(card) {
-        const index = this.cards.map(item => item.UUID).indexOf(card.UUID);
-        if (index !== -1) {
-            this.cards.splice(index);
+        let removedCard;
+        if (this.__findCardIndex(card) !== -1) {
+            removedCard = this.cards.splice(index);
         }
+        return removedCard;
     }
 
     pop() {
@@ -84,6 +112,16 @@ class CardStack {
         }
 
         return this.cards;
+    }
+
+    sort() {
+        this.cards = this.cards.sort((a, b) => {
+            const aNumber = numbers[a.number];
+            const bNumber = numbers[b.number];
+            if (aNumber - bNumber > 0) return 1;
+            if (aNumber - bNumber < 0) return -1;
+            return 0;
+        })
     }
 }
 
