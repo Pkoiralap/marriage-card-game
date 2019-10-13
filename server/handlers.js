@@ -1,6 +1,9 @@
-var fs = require('fs');
+const fs = require('fs');
 const path = require('path');
-const UUID = require('uuid');
+
+const Game = require('../classes/game');
+const Player = require('../classes/player');
+const gameList = {};
 
 const publicPath = path.resolve(__dirname, '../public/index.html');
 const handlers = {
@@ -13,17 +16,70 @@ const handlers = {
         }
     },
     createGame: async (request, h, db) => {
+        // playerName
         const {payload} = request;
-        const gameId = UUID.v4();
 
-        // create game in database
-        await db.createDocument('testCol', {a: 1});
+        const player = new Player(payload.playerName)
+        const game = new Game(db);
+
+        gameList[game.id] = game;
+        game.addPlayer(player);
+        try {
+            await game.save();
+        } catch (err) {
+            console.log(err);
+        }
+
         return h.response({
             success: true,
             data: {
-                gameId,
+                gameId: game.id,
             },
             message: ''
+        }).type('application/json');
+    },
+    joinGame: async (request, h) => {
+        // gameId, playerName
+        const {payload} = request;
+
+        const player = new Player(payload.playerName)
+        const game = gameList[payload.gameId];
+        if (!game) {
+            return {
+                success: false,
+                message: 'No game with that id exists',
+            };
+        }
+        const {success, data, message} = game.addPlayer(player);
+        await game.save();
+        return h.response({
+            success,    
+            data,
+            message,
+        }).type('application/json');
+    },
+    startGame: async (request, h, db) => {
+        // gameId, playerName
+        const {payload} = request;
+        const game = gameList[payload.gameId];
+        if (!game) {
+            return {
+                success: false,
+                message: 'No game with that id exists',
+            };
+        }
+        if (game.players.length <= 1) {
+            return {
+                success: false,
+                message: 'Atleast two players are required',
+            };
+        }
+        
+        // start the game
+        game.initiate();
+        return h.response({
+            success: true,    
+            message: 'Game initiated',
         }).type('application/json');
     },
 };

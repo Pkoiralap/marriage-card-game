@@ -10,7 +10,6 @@ const init = async () => {
     });
     const db = new dbHandler();
     await db.initDatabase();
-
     // add imported routes
     server.route(routes.map(item => ({
         ...item,

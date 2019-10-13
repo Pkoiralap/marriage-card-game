@@ -3,22 +3,31 @@ const {Card, CardStack, suits, numbers} = require('./card');
 const Player = require('./player');
 
 const MAX_NUMBER_OF_PLAYERS = 6;
+const TWO_HOURS = 2 * 60 * 60 * 1000;
 class Game {
-    constructor() {
+    constructor(db, json) {
+        this.db = db;
         this.id = UUID.v4();
-        this.baseStack = this.buildBaseStack();
         this.players = [];
+        this.deck = this.buildDeck();
+        this.visibles = new CardStack();
+        this.createdBy = undefined;
 
-        this.baseStack.shuffle();
-        this.baseStack.cards.forEach(card => {
-            console.log(card.display());
-        });
+        setTimeout(() => {
+            this.destroy();
+        }, TWO_HOURS)
     }
 
     addPlayer(player) {
+        if (this.players.filter(p => p.name === player.name )[0]) {
+            return {success: false, message: 'A player with the same name already exists'};
+        }
         if (this.players.length <= MAX_NUMBER_OF_PLAYERS) {
+            if (this.players.length === 0) {
+                this.createdBy = player;
+            }
             this.players.push(player);
-            return {success: true};
+            return {success: true, data: {gameId: this.id}};
         };
         return {success: false, message: 'Number of players exceeded'};
     }
@@ -26,21 +35,17 @@ class Game {
     deal() {
         this.players.forEach(player => {
             for (let i=0; i<21; i++) {
-                const card = this.baseStack.pop();
+                const card = this.deck.pop();
                 player.addCard(card)
             }
         });
     }
 
-    distributeCards() {
-
-    }
-
-    buildBaseStack() {
+    buildDeck() {
         const cardStack = new CardStack();
         [1,2,3].forEach(book => {
             Object.keys(suits).forEach(suit => {
-                numbers.forEach(number => {
+                Object.keys(numbers).forEach(number => {
                     const card = new Card(suit, number, false);
                     cardStack.add(card);
                 })
@@ -48,22 +53,60 @@ class Game {
             const joker = new Card(undefined, undefined, true);
             cardStack.add(joker);
         });
-        
+        cardStack.shuffle();
         return cardStack;
+    }
+
+    initiate() {
+        this.deal();
+        const card = this.deck.pop();
+        this.visibles.add(card);
+    }
+
+    // deckOrVisibles == 'deck', or 'visibles'
+    take(player, deckOrVisibles) {
+        const taken = this[deckOrVisibles].pop();
+        player.addCard(taken);
+    }
+
+    throw(player, card) {
+        const removed = player.remove(card);
+        this.visibles.add(removed);
+    }
+
+    async save() {
+        const docToSave = {
+            _id: this.id,
+            players: this.players,
+            deck: this.deck,
+            visibles: this.visibles,
+        };
+        
+        const exists = await this.db.existsDocument('GAME', this);
+        if (exists) {
+            return this.db.replaceDocument('GAME', {_id: this.id}, docToSave)
+        }
+        return this.db.createDocument('GAME', docToSave)
+    }
+
+    destroy() {
+        return this.db.deleteDocument({_id: id});
     }
 }
 
-const game = new Game();
-const player1 = new Player(new CardStack());
-const player2 = new Player(new CardStack());
-const player3 = new Player(new CardStack());
+module.exports = Game;
 
-game.addPlayer(player1);
-game.addPlayer(player2);
-game.addPlayer(player3);
+// const game = new Game();
+// const player1 = new Player(new CardStack());
+// const player2 = new Player(new CardStack());
+// const player3 = new Player(new CardStack());
 
-game.deal();
+// game.addPlayer(player1);
+// game.addPlayer(player2);
+// game.addPlayer(player3);
 
-player1.display();
-player2.display();
-player3.display();
+// game.initiate();
+
+// player1.display();
+// player2.display();
+// player3.display();

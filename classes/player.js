@@ -1,14 +1,19 @@
 const UUID = require('uuid');
-
+const {CardStack} = require('./card');
 class Player {
-    constructor(cardStack) {
+    constructor(name, cardStack) {
         this.id = UUID.v4();
-        this.cardStack = cardStack;
+        this.name = name;
+        this.cardStack = cardStack || new CardStack();
         this.turn = false;
     }
 
     addCard(card) {
         this.cardStack.add(card);
+    }
+
+    removeCard(card) {
+        this.cardStack.remove(card);
     }
 
     display() {
