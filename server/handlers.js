@@ -5,12 +5,11 @@ const Game = require('../classes/game');
 const Player = require('../classes/player');
 const gameList = {};
 
-const publicPath = path.resolve(__dirname, '../public/index.html');
 const handlers = {
     baseHandler: (request, h) => {
         try {
-            const data = fs.readFileSync(publicPath, 'utf8');
-            return h.response(data).type('text/html');
+            console.log("file is", h.file("index.html"));
+            return h.file("index.html");
         } catch(err) {
             console.log(err)
         }

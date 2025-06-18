@@ -21,7 +21,6 @@ const numbers = {
     'JACK': 11,
     'QUEEN': 12,
     'KING': 13,
-    'POSTACE': 14,
 };
 
 class Card {

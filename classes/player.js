@@ -18,6 +18,7 @@ class Player {
 
     display() {
         console.log(this.cardStack.length());
+        console.log(this.cardStack.cards.map(card => card.display()));
     }
 };
 
