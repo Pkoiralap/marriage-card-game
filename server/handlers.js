@@ -8,8 +8,7 @@ const gameList = {};
 const handlers = {
     baseHandler: (request, h) => {
         try {
-            console.log("file is", h.file("index.html"));
-            return h.file("index.html");
+            return h.file("/src/public/index.html");
         } catch(err) {
             console.log(err)
         }

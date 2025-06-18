@@ -1,5 +1,5 @@
-const mongoUrl = process.env.MONGODB_URL || 'mongodb://localhost:27017';
-const dbName = process.env.DB_NAME || 'marriage';
+const mongoUrl = process.env.MONGODB_URL;
+const dbName = process.env.DB_NAME;
 const config = {
     name: dbName,
     url: mongoUrl,

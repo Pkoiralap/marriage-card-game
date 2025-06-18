@@ -1,7 +1,6 @@
 const handlers = require('./handlers')
 
 const routes = [
-    { method: 'GET', path: '/', handler: handlers.baseHandler},
     { method: 'POST', path: '/create', handler: handlers.createGame},
     { method: 'POST', path: '/join', handler: handlers.joinGame},
     { method: 'POST', path: '/start', handler: handlers.startGame },

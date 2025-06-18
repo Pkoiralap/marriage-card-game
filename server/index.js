@@ -1,27 +1,39 @@
 'use strict';
 
-const Path = require('path');
 const Hapi = require('@hapi/hapi');
+const Path = require('path');
 const routes = require('./routes');
 const dbHandler = require('../database');
 
-const publicPath = process.env.PUBLIC_PATH || Path.resolve(__dirname, '../public');
-
-console.log('Public path:', publicPath);
 const init = async () => {
     const server = Hapi.server({
         port: 8085,
-        host: 'localhost',
+        host: '0.0.0.0',
         routes: {
             files: {
-                relativeTo: publicPath
+                relativeTo: Path.join(__dirname, '../public')
             }
         }
     });
+
+    // Initialize the database handler
     const db = new dbHandler();
     await db.initDatabase();
-    // add imported routes
 
+    // serve static files
+    await server.register(require('@hapi/inert'));
+    server.route({
+        method: 'GET',
+        path: '/{param*}',
+        handler: {
+            directory: {
+                path: '../public',
+                index: ['index.html']
+            }
+        }
+    });
+
+    // add imported routes
     server.route(routes.map(item => ({
         ...item,
         handler: (request, h) => item.handler(request, h, db),

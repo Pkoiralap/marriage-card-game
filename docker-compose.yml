@@ -2,16 +2,21 @@ version: '3.8'
 
 services:
   node-app:
-    build: .
+    build: 
+      context: .
+      dockerfile: Dockerfile
+      no_cache: true
+
     image: node-app
     environment:
       - MONGODB_URL=mongodb://mongodb:27017
       - DB_NAME=marriage
-      - PUBLIC_PATH=/src/public
     ports:
       - '8085:8085'
     depends_on:
-      - mongodb
+      mongodb: 
+        condition: service_healthy
+        restart: true
     volumes:
       - .:/src
     networks:
@@ -25,6 +30,12 @@ services:
       - dbdata6:/data/db
     networks:
       - node-network
+    healthcheck:
+      test: ["CMD","mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 5s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
 
 volumes:
   dbdata6:
