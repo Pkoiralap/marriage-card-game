@@ -24,7 +24,7 @@ const numbers = {
 };
 
 class Card {
-    constructor(suit, number, jocker, player) {
+    constructor(suit, number, joker, player) {
         this.cardID = UUID.v4();
         if (typeof number === 'string') {
             this.number = number;
@@ -38,7 +38,7 @@ class Card {
         }
         this.suit = suit;
         this.player = player;
-        this.jocker = jocker;
+        this.joker = joker;
     }
 
     setMaal(maal) {

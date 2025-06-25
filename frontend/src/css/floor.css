@@ -1,0 +1,33 @@
+.floor {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  display: flex;
+  gap: 40px;
+  padding: 16px;
+  background-color: honeydew;
+  border-radius: 8px;
+  justify-content: center;
+  align-items: center;
+}
+
+.floorCards, .Deck{
+  position: relative;
+  width: 60px;
+  height: 90px;
+}
+
+.floorCards .card,
+.Deck .card {
+  position: absolute;
+  width: 30px;
+  height: 50px;
+  background-color: white;
+  border-radius: 4px;
+  box-shadow: 1px 1px 4px rgba(0, 0, 0, 0.3);
+  text-align: center;
+  line-height: 90px;
+  font-size: 14px;
+   border: 1px solid #000;
+}
