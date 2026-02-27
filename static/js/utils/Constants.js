@@ -1,0 +1,12 @@
+export const CARD_WIDTH = 4.0;
+export const CARD_HEIGHT = 5.6;
+export const CARD_THICKNESS = 0.02;
+export const FAN_RADIUS = 60;
+export const FAN_SPACING = 1.8;
+export const DEPTH_STEP = 0.1;
+export const TABLE_RADIUS = 15;
+export const OPPONENT_TABLE_RADIUS = 18;
+export const HAND_CENTER_POS = new THREE.Vector3(10, 2, 12);
+export const DECK_POS = new THREE.Vector3(-3, 0.5, 0);
+export const CHOICE_POS = new THREE.Vector3(3, 0.5, 2);
+export const DISCARD_ZONE_RADIUS = 12;

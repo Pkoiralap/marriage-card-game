@@ -1,0 +1,21 @@
+version: '3.8'
+
+services:
+  web:
+    build: .
+    command: daphne -b 0.0.0.0 -p 8000 server.asgi:application
+    restart: always
+    ports:
+      - "8000:8000"
+    depends_on:
+      - redis
+    environment:
+      - DEBUG=0
+      - DJANGO_ALLOWED_HOSTS=${ALLOWED_HOSTS:-*}
+      - REDIS_URL=redis://redis:6379/0
+
+  redis:
+    image: redis:7-alpine
+    restart: always
+    ports:
+      - "6379:6379"

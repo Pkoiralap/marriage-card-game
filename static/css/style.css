@@ -1,0 +1,187 @@
+:root {
+    --bg-color: #121212;
+    --text-color: #e0e0e0;
+    --primary-color: #4caf50; /* Green */
+    --primary-hover: #43a047;
+    --secondary-color: #2196f3; /* Blue */
+    --secondary-hover: #1e88e5;
+    --card-bg: #1e1e1e;
+    --table-color: #2e8b57;
+    --shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+    --radius: 8px;
+    --font-family: 'Inter', system-ui, -apple-system, sans-serif;
+}
+
+body {
+    margin: 0;
+    padding: 0;
+    background-color: var(--bg-color);
+    color: var(--text-color);
+    font-family: var(--font-family);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 100vh;
+}
+
+h1 {
+    font-size: 3rem;
+    margin-bottom: 2rem;
+    font-weight: 700;
+    background: linear-gradient(45deg, #4caf50, #81c784);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    text-shadow: 0 2px 4px rgba(0,0,0,0.2);
+}
+
+/* Home Container */
+#home-container {
+    background-color: var(--card-bg);
+    padding: 3rem;
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    text-align: center;
+    max-width: 400px;
+    width: 90%;
+    animation: fadeIn 0.5s ease-out;
+}
+
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(-20px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+/* Buttons */
+.btn {
+    display: inline-block;
+    width: 100%;
+    padding: 12px 20px;
+    margin: 10px 0;
+    font-size: 1rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: white;
+    border: none;
+    border-radius: var(--radius);
+    cursor: pointer;
+    transition: all 0.2s ease;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+}
+
+.btn-primary {
+    background-color: var(--primary-color);
+}
+
+.btn-primary:hover {
+    background-color: var(--primary-hover);
+    transform: translateY(-2px);
+    box-shadow: 0 4px 8px rgba(76, 175, 80, 0.4);
+}
+
+.btn-secondary {
+    background-color: var(--secondary-color);
+}
+
+.btn-secondary:hover {
+    background-color: var(--secondary-hover);
+    transform: translateY(-2px);
+    box-shadow: 0 4px 8px rgba(33, 150, 243, 0.4);
+}
+
+/* Game Container */
+#game-container {
+    display: none;
+    width: 100vw;
+    height: 100vh;
+    background-color: var(--table-color);
+    background-image: radial-gradient(circle, transparent 20%, #1a5c36 100%);
+    position: relative;
+    overflow: hidden;
+}
+
+/* Modal */
+.modal {
+    display: none; /* Hidden by default */
+    position: fixed;
+    z-index: 1000;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(0, 0, 0, 0.7);
+    backdrop-filter: blur(5px);
+    justify-content: center;
+    align-items: center;
+}
+
+.modal-content {
+    background-color: var(--card-bg);
+    padding: 2rem;
+    border-radius: var(--radius);
+    width: 90%;
+    max-width: 350px;
+    box-shadow: 0 10px 25px rgba(0,0,0,0.5);
+    text-align: left;
+    position: relative;
+    animation: scaleIn 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+}
+
+@keyframes scaleIn {
+    from { opacity: 0; transform: scale(0.9); }
+    to { opacity: 1; transform: scale(1); }
+}
+
+.modal h2 {
+    margin-top: 0;
+    color: var(--primary-color);
+}
+
+.form-group {
+    margin-bottom: 1.5rem;
+}
+
+.form-group label {
+    display: block;
+    margin-bottom: 0.5rem;
+    font-size: 0.9rem;
+    color: #aaa;
+}
+
+.form-control {
+    width: 100%;
+    padding: 10px;
+    border: 1px solid #333;
+    border-radius: 4px;
+    background-color: #2c2c2c;
+    color: white;
+    font-size: 1rem;
+    box-sizing: border-box; /* Fix padding issue */
+}
+
+.form-control:focus {
+    outline: none;
+    border-color: var(--primary-color);
+}
+
+.modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+}
+
+.btn-sm {
+    width: auto;
+    padding: 8px 16px;
+    font-size: 0.9rem;
+    margin: 0;
+}
+
+.btn-cancel {
+    background-color: transparent;
+    border: 1px solid #555;
+}
+
+.btn-cancel:hover {
+    background-color: #333;
+}
