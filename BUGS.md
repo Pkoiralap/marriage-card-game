@@ -1,0 +1,1 @@
+Bug1: when adjecent cards are switched. say for instance pos10,pos11 are switched to pos11,pos10, upon discarding pos11 card in quick succession, the discard removes the pos10 card. This must have to do something with the positioning of the cards not being updated.
