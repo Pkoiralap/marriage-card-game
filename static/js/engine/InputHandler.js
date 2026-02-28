@@ -64,24 +64,28 @@ export class InputHandler {
     onMouseDown(event) {
         if (!this.game.me || this.isWaitingForServer) return;
         
+        // Block all interaction if it's not our turn
+        if (!this.game.isMyTurn()) return;
         this.raycaster.setFromCamera(this.mouse, this.renderer.camera);
         
         // Check for hand cards first
         const handIntersects = this.raycaster.intersectObjects(this.renderer.cardsGroup.children);
         if (handIntersects.length > 0) {
             const mesh = handIntersects[0].object;
-            if (mesh.userData && mesh.userData.index !== undefined) {
-                this.isDragging = true;
-                this.draggedCardMesh = mesh;
-                
-                const viewDir = new THREE.Vector3();
-                this.renderer.camera.getWorldDirection(viewDir);
-                const liftVector = viewDir.clone().multiplyScalar(-2.5);
-
-                this.renderer.interactionPlane.position.copy(mesh.position).add(liftVector);
-                this.renderer.interactionPlane.updateMatrixWorld();
-
-                const planeIntersect = this.raycaster.intersectObject(this.renderer.interactionPlane);
+                            if (mesh.userData && mesh.userData.index !== undefined) {
+                                this.isDragging = true;
+                                this.draggedCardMesh = mesh;
+                                
+                                // Align plane to camera
+                                this.renderer.interactionPlane.quaternion.copy(this.renderer.camera.quaternion);
+                                
+                                const viewDir = new THREE.Vector3();
+                                this.renderer.camera.getWorldDirection(viewDir);
+                                const liftVector = viewDir.clone().multiplyScalar(-2.5);
+            
+                                this.renderer.interactionPlane.position.copy(mesh.position).add(liftVector);
+                                this.renderer.interactionPlane.updateMatrixWorld();
+                            const planeIntersect = this.raycaster.intersectObject(this.renderer.interactionPlane);
                 if (planeIntersect.length > 0) {
                     const targetPos = mesh.position.clone().add(liftVector);
                     this.dragOffset.copy(planeIntersect[0].point).sub(targetPos);
@@ -102,11 +106,15 @@ export class InputHandler {
                 if (mesh.userData.type === 'deck' || mesh.userData.type === 'choice') {
                     this.dragSource = mesh.userData.type;
                     this.dragSourceMesh = mesh;
-                    this.createGhostCard(mesh);                    
-                    // Setup interaction plane for ghost
+                    this.createGhostCard(mesh);
+                    
+                    // Align plane to camera
+                    this.renderer.interactionPlane.quaternion.copy(this.renderer.camera.quaternion);
+
+                    // Setup interaction plane for ghost - lift significantly
                     const viewDir = new THREE.Vector3();
                     this.renderer.camera.getWorldDirection(viewDir);
-                    const liftVector = viewDir.clone().multiplyScalar(-2.5); 
+                    const liftVector = viewDir.clone().multiplyScalar(-5); 
                     this.renderer.interactionPlane.position.copy(this.ghostCard.position).add(liftVector);
                     this.renderer.interactionPlane.updateMatrixWorld();
                 }

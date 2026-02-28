@@ -49,9 +49,14 @@ class Game(models.Model):
         self.save()
 
 class Player(models.Model):
+    PLAYER_TYPES = [
+        ('HUMAN', 'Human'),
+        ('AI', 'AI'),
+    ]
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     name = models.CharField(max_length=100)
     game = models.ForeignKey(Game, on_delete=models.CASCADE, related_name='players')
+    player_type = models.CharField(max_length=10, choices=PLAYER_TYPES, default='HUMAN')
     hand = models.JSONField(default=list)
     is_dealer = models.BooleanField(default=False)
     points = models.IntegerField(default=0)

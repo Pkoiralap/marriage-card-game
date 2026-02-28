@@ -14,10 +14,15 @@ def create_game(request):
         player_name = data.get('player_name')
         num_players = int(data.get('num_players', 4))
         
-        game = Game.objects.create(num_players=num_players)
-        player = Player.objects.create(name=player_name, game=game, is_dealer=True)
+        game = Game.objects.create(num_players=num_players, turn_player_index=0)
+        # Create Human player first
+        player = Player.objects.create(name=player_name, game=game, is_dealer=True, player_type='HUMAN')
         
-        # Initialize deck and deal cards (for simplicity, we'll deal now, though we may wait for all players to join later)
+        # Create AI players after
+        for i in range(num_players - 1):
+            Player.objects.create(name=f"AI_{i+1}", game=game, player_type='AI')
+        
+        # Initialize deck and deal cards
         game.initialize_deck()
         game.deal_cards()
         

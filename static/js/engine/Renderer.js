@@ -102,8 +102,13 @@ export class Renderer {
 
     createInteractionPlane() {
         const plane = new THREE.Mesh(
-            new THREE.PlaneGeometry(500, 500),
-            new THREE.MeshBasicMaterial({ visible: false, side: THREE.DoubleSide })
+            new THREE.PlaneGeometry(2000, 2000),
+            new THREE.MeshBasicMaterial({ 
+                visible: false, 
+                side: THREE.DoubleSide,
+                transparent: true,
+                depthWrite: false // CRITICAL: prevent it from blocking depth
+            })
         );
         plane.quaternion.copy(this.camera.quaternion);
         return plane;
@@ -254,11 +259,12 @@ export class Renderer {
         const backMaterial = new THREE.MeshBasicMaterial({ map: backTexture, transparent: true });
         
         let frontMaterial;
-        if (cardData) {
+        if (cardData && !isFaceDown) {
             const color = (cardData.suit === 'HEART' || cardData.suit === 'DIAMOND') ? 'red' : 'black';
             const texture = createCardTexture(cardData.number, cardData.suit, color, this.threeRenderer);
             frontMaterial = new THREE.MeshBasicMaterial({ map: texture, transparent: true });
         } else {
+            // Face down or no data - use back texture for front side too
             frontMaterial = backMaterial;
         }
 
@@ -301,14 +307,12 @@ export class Renderer {
         const numOpponents = 3; 
         const tableRadius = OPPONENT_TABLE_RADIUS; 
         for (let i = 0; i < numOpponents; i++) {
-            // Angle should distribute opponents evenly (excluding the player at the bottom)
-            const angle = (Math.PI / 4) + (i + 1) * (Math.PI * 2 / (numOpponents + 1));
-            const x = Math.cos(angle) * tableRadius * 0.9; // Pull inward slightly
-            const z = Math.sin(angle) * tableRadius * 0.9;
+            const pos = this.getOpponentPosition(i, numOpponents);
             const oppGeo = new THREE.SphereGeometry(2, 32, 32);
             const oppMat = new THREE.MeshStandardMaterial({ color: 0xe74c3c });
             const opponent = new THREE.Mesh(oppGeo, oppMat);
-            opponent.position.set(x, 2, z);
+            opponent.position.copy(pos);
+            opponent.position.y = 2;
             opponent.castShadow = true;
             this.opponentsGroup.add(opponent);
             
@@ -317,9 +321,8 @@ export class Renderer {
                 const cGeo = new THREE.BoxGeometry(1.5, 2.1, 0.05);
                 const cMat = new THREE.MeshStandardMaterial({ map: createCardBackTexture(this.threeRenderer) });
                 const cMesh = new THREE.Mesh(cGeo, cMat);
-                // Position opponent hand cards closer to their sphere
-                const cx = x * 0.85 + (j - handSize/2) * 0.4; 
-                const cz = z * 0.85 + (j - handSize/2) * 0.4; 
+                const cx = pos.x * 0.85 + (j - handSize/2) * 0.4; 
+                const cz = pos.z * 0.85 + (j - handSize/2) * 0.4; 
                 cMesh.position.set(cx, 2.5, cz);
                 cMesh.lookAt(0, 2.5, 0); 
                 cMesh.rotation.y += Math.PI; 
@@ -327,5 +330,18 @@ export class Renderer {
                 this.opponentsGroup.add(cMesh);
             }
         }
+    }
+
+    getOpponentPosition(index, totalOpponents = 3) {
+        const totalPlayers = totalOpponents + 1;
+        const angleStep = (Math.PI * 2) / totalPlayers;
+        const offset = Math.PI/totalPlayers;
+        
+        const angle = (-Math.PI / 2) + (index + 1) * angleStep + offset;
+        
+        const x = Math.cos(angle) * OPPONENT_TABLE_RADIUS * 0.9;
+        // In Three.js, negative Z is 'up' (away from camera)
+        const z = -Math.sin(angle) * OPPONENT_TABLE_RADIUS * 0.9; 
+        return new THREE.Vector3(x, 0, z);
     }
 }

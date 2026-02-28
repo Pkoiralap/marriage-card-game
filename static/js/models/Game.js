@@ -5,7 +5,7 @@ export class Game {
         this.id = null;
         this.me = null;
         this.opponents = [];
-        this.turnPlayerIndex = 0;
+        this.turnPlayerIndex = 0; // Standardize on camelCase
         this.numPlayers = 4;
         this.isStarted = false;
         
@@ -17,6 +17,16 @@ export class Game {
         this.discardPile = [];
         this.visibles = [];
         this.choiceCard = null;
+        this.players = [];
+    }
+
+    getMyIndex() {
+        if (!this.me || !this.players.length) return -1;
+        return this.players.findIndex(p => p.name === this.me.name);
+    }
+
+    isMyTurn() {
+        return this.turnPlayerIndex === this.getMyIndex();
     }
 
     setPlayer(name) {
@@ -49,6 +59,7 @@ export class Game {
         if (state.choice_card !== undefined) this.choiceCard = state.choice_card;
         if (state.turn_player_index !== undefined) this.turnPlayerIndex = state.turn_player_index;
         if (state.turn_step !== undefined) this.turnStep = state.turn_step;
+        if (state.players !== undefined) this.players = state.players;
     }
 
     reorderHand(oldIndex, newIndex) {

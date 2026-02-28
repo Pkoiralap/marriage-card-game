@@ -1,8 +1,9 @@
 export class SocketManager {
-    constructor(gameId, playerName, onStateUpdate) {
+    constructor(gameId, playerName, onStateUpdate, onAIAction) {
         this.gameId = gameId;
         this.playerName = playerName;
         this.onStateUpdate = onStateUpdate;
+        this.onAIAction = onAIAction;
         this.socket = null;
     }
 
@@ -21,6 +22,8 @@ export class SocketManager {
             const message = JSON.parse(data.message);
             if (message.type === 'game_state') {
                 this.onStateUpdate(message.state);
+            } else if (message.type === 'ai_action') {
+                if (this.onAIAction) this.onAIAction(message.action);
             } else if (message.type === 'refresh_state') {
                 this.send({ type: 'get_game_state', player_name: this.playerName });
             }
