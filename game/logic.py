@@ -9,18 +9,20 @@ class BasePlayer(ABC):
     def process_turn(self, **kwargs):
         """
         Main entry point for a player's turn. 
-        Returns True if turn is complete (discarded), False if still in progress.
+        Returns (True, card, action_details) if turn step is complete, (False, None, None) otherwise.
         """
         if self.game_model.turn_step == 'PICK':
-            if self.handle_pick(**kwargs):
+            success, card, source = self.handle_pick(**kwargs)
+            if success:
                 self.game_model.turn_step = 'DISCARD'
                 self.sort_cards()
                 self.show_sequence_or_dublee()
                 self.save()
-                return False # Still need to discard
+                return True, card, source
         
         elif self.game_model.turn_step == 'DISCARD':
-            if self.handle_discard(**kwargs):
+            success, card = self.handle_discard(**kwargs)
+            if success:
                 # Turn is complete, move to next player (ANTI-CLOCKWISE)
                 self.game_model.turn_step = 'PICK'
                 self.game_model.turn_player_index = (self.game_model.turn_player_index - 1) % self.game_model.num_players
@@ -29,9 +31,9 @@ class BasePlayer(ABC):
                     self.claim_game()
                 
                 self.save()
-                return True
+                return True, card, None
         
-        return False
+        return False, None, None
 
     @abstractmethod
     def handle_pick(self, **kwargs):
@@ -64,7 +66,7 @@ class BasePlayer(ABC):
 class HumanPlayer(BasePlayer):
     def handle_pick(self, source=None, target_index=None, **kwargs):
         if not source:
-            return False
+            return False, None, None
             
         card = None
         if source == 'deck' and self.game_model.deck:
@@ -77,36 +79,40 @@ class HumanPlayer(BasePlayer):
                 self.player_model.hand.insert(target_index, card)
             else:
                 self.player_model.hand.append(card)
-            return True
-        return False
+            return True, card, source
+        return False, None, None
 
     def handle_discard(self, card_index=None, **kwargs):
         if card_index is None:
-            return False
+            return False, None
             
         if 0 <= card_index < len(self.player_model.hand):
             card = self.player_model.hand.pop(card_index)
             self.game_model.visibles.append(card)
-            return True
-        return False
+            return True, card
+        return False, None
 
 class AIPlayer(BasePlayer):
     def handle_pick(self, **kwargs):
-        # Random pick logic for now
-        source = 'deck'
-        if self.game_model.visibles and random.random() > 0.5:
-            source = 'choice'
+        source = kwargs.get('source')
+        if not source:
+            # Random pick logic
+            source = 'deck'
+            if self.game_model.visibles and random.random() > 0.5:
+                source = 'choice'
         
         card = None
         if source == 'choice' and self.game_model.visibles:
             card = self.game_model.visibles.pop()
         elif self.game_model.deck:
+            # Fallback to deck if choice is empty but it wanted choice
+            source = 'deck'
             card = self.game_model.deck.pop()
 
         if card:
             self.player_model.hand.append(card)
-            return True
-        return False
+            return True, card, source
+        return False, None, None
 
     def handle_discard(self, **kwargs):
         if self.player_model.hand:
@@ -114,5 +120,5 @@ class AIPlayer(BasePlayer):
             idx = random.randint(0, len(self.player_model.hand) - 1)
             card = self.player_model.hand.pop(idx)
             self.game_model.visibles.append(card)
-            return True
-        return False
+            return True, card
+        return False, None

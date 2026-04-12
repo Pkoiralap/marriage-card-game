@@ -79,15 +79,16 @@ export class GameController {
         
         this.socket.connect();
         this.animate();
+        this.logMessage("Game started! Waiting for players...");
     }
 
     async processQueues() {
         if (this.isAnimating) return;
 
-        // Prioritize AI Actions over state refreshes for smoother animation flow
+        // Prioritize actions over state refreshes for smoother animation flow
         if (this.actionQueue.length > 0) {
             const action = this.actionQueue.shift();
-            await this.handleAIAction(action);
+            await this.handleAction(action);
             return;
         }
 
@@ -135,7 +136,8 @@ export class GameController {
         if (handledManualAction) {
             const numAddedToTable = newVisiblesSize - oldVisiblesSize;
             if (this.lastDiscardTransform && numAddedToTable > 0) {
-                const discardedCard = state.visibles[oldVisiblesSize];
+                // If it was my discard, we don't need to pop here because we want to see the new card
+                const discardedCard = state.visibles[newVisiblesSize - 1];
                 const target = this.calculateTableTarget(newVisiblesSize, state.visibles);
                 this.isAnimating = true;
                 this.renderer.animateCard(this.lastDiscardTransform.pos, target.pos, discardedCard, false, () => {
@@ -154,33 +156,63 @@ export class GameController {
         }
     }
 
-    async handleAIAction(action) {
+    async handleAction(action) {
         const myIndex = this.game.getMyIndex();
         if (myIndex === -1) return;
 
+        // Log the action
+        this.logAction(action);
+
+        const isMe = (action.player_name === this.game.me.name);
+        
+        // If it's my own action and I've already handled it locally, just skip animation
+        if (isMe && (this.wasManualPick || this.wasManualDiscard)) {
+            this.processQueues();
+            return;
+        }
+
         // Anti-clockwise relative index: 
-        // If myIndex=0: AI 3->0 (Right), AI 2->1 (Top), AI 1->2 (Left)
         let relativeIndex = (myIndex - action.player_index - 1);
         while (relativeIndex < 0) relativeIndex += this.game.players.length;
         relativeIndex = relativeIndex % (this.game.players.length); 
 
-        const oppPos = this.renderer.getOpponentPosition(relativeIndex, this.game.players.length - 1);
-        oppPos.y = 2.5; // Height of opponent hands
+        const oppPos = isMe ? HAND_CENTER_POS.clone() : this.renderer.getOpponentPosition(relativeIndex, this.game.players.length - 1);
+        if (!isMe) oppPos.y = 2.5; 
 
-        if (action.type === 'ai_pick') {
+        if (action.type.includes('pick')) {
             const sourcePos = action.source === 'choice' ? CHOICE_POS.clone() : DECK_POS.clone();
+            let existingMesh = null;
+
             if (action.source === 'choice') {
                 sourcePos.y += (this.game.visibles.length * 0.02);
+                
+                // Try to extract the specific mesh from the ground
+                if (action.card && action.card.id !== undefined) {
+                    existingMesh = this.renderer.extractCardMesh(action.card.id);
+                }
+
+                // Update game state for ground pile locally so visuals match immediately
+                if (this.game.visibles.length > 0) {
+                    // Only pop if we didn't extract it or if we want to ensure state matches
+                    // If we extracted it, it's already gone from renderer's view.
+                    this.game.visibles.pop();
+                    this.renderer.updateChoiceCard(this.game.visibles);
+                }
             } else {
                 sourcePos.y += (this.game.stockPileCount / 5 * 0.05);
+                // Prevent deck lingering
+                if (this.game.stockPileCount > 0) {
+                    this.game.stockPileCount--;
+                    this.renderer.updateDeck(this.game.stockPileCount);
+                }
             }
 
             this.isAnimating = true;
-            this.renderer.animateCard(sourcePos, oppPos, action.card, action.source === 'deck', () => {
+            this.renderer.animateCard(sourcePos, oppPos, action.card, action.source === 'deck' && !isMe, () => {
                 this.isAnimating = false;
                 this.processQueues();
-            });
-        } else if (action.type === 'ai_discard') {
+            }, null, null, existingMesh);
+        } else if (action.type.includes('discard')) {
             const target = this.calculateTableTarget(this.game.visibles.length + 1, [...this.game.visibles, action.card]);
 
             this.isAnimating = true;
@@ -188,6 +220,40 @@ export class GameController {
                 this.isAnimating = false;
                 this.processQueues();
             }, target.quat);
+        }
+    }
+
+    logAction(action) {
+        let message = "";
+        const playerName = `<span class="log-player">${action.player_name}</span>`;
+        let cardName = "a card";
+        
+        if (action.card && action.card.number) {
+            cardName = `<span class="log-card">${action.card.number} of ${action.card.suit}</span>`;
+        }
+
+        if (action.type.includes('pick')) {
+            const source = action.source === 'choice' ? 'the choice pile' : 'the deck';
+            message = `${playerName} picked ${cardName} from ${source}`;
+        } else if (action.type.includes('discard')) {
+            message = `${playerName} discarded ${cardName}`;
+        }
+
+        if (message) this.logMessage(message);
+    }
+
+    logMessage(message) {
+        const logContainer = document.getElementById('game-log');
+        if (!logContainer) return;
+
+        const entry = document.createElement('div');
+        entry.className = 'log-entry';
+        entry.innerHTML = message;
+        logContainer.prepend(entry);
+
+        // Limit logs
+        while (logContainer.children.length > 50) {
+            logContainer.removeChild(logContainer.lastChild);
         }
     }
 

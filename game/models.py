@@ -13,6 +13,7 @@ class Game(models.Model):
     num_players = models.IntegerField(default=4)
     phase = models.CharField(max_length=20, default='DEALING')
     turn_step = models.CharField(max_length=20, default='PICK') # 'PICK', 'DISCARD'
+    maal_card = models.JSONField(null=True, blank=True)
 
     def __str__(self):
         return str(self.id)
@@ -58,9 +59,23 @@ class Player(models.Model):
     game = models.ForeignKey(Game, on_delete=models.CASCADE, related_name='players')
     player_type = models.CharField(max_length=10, choices=PLAYER_TYPES, default='HUMAN')
     hand = models.JSONField(default=list)
+    shown_sequences = models.JSONField(default=list) # List of lists of cards
     is_dealer = models.BooleanField(default=False)
     points = models.IntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True, null=True)
 
     def __str__(self):
         return self.name
+
+class GameAction(models.Model):
+    game = models.ForeignKey(Game, on_delete=models.CASCADE, related_name='actions')
+    player = models.ForeignKey(Player, on_delete=models.SET_NULL, null=True, related_name='actions')
+    action_type = models.CharField(max_length=50) # 'PICK', 'DISCARD', 'SHOW_SEQUENCE', etc.
+    data = models.JSONField(default=dict)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['created_at']
+
+    def __str__(self):
+        return f"{self.player.name if self.player else 'System'}: {self.action_type}"

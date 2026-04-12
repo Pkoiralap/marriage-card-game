@@ -3,7 +3,7 @@ import asyncio
 import random
 from channels.generic.websocket import AsyncWebsocketConsumer
 from asgiref.sync import sync_to_async
-from .models import Player, Game
+from .models import Player, Game, GameAction
 from .logic import HumanPlayer, AIPlayer
 
 class GameConsumer(AsyncWebsocketConsumer):
@@ -47,12 +47,34 @@ class GameConsumer(AsyncWebsocketConsumer):
             players_models = await sync_to_async(list)(game.players.all().order_by('created_at'))
             player_model = await sync_to_async(Player.objects.get)(name=player_name, game=game)
             
+            player_index = -1
+            for i, p in enumerate(players_models):
+                if p.id == player_model.id:
+                    player_index = i
+                    break
+
             turn_player_model = players_models[game.turn_player_index % len(players_models)]
             if player_model.id != turn_player_model.id:
                 return
 
-            await sync_to_async(self.run_player_turn)(player_model, source=source, target_index=target_index)
-            await self.broadcast_refresh()
+            success, picked_card, actual_source = await sync_to_async(self.run_player_turn)(player_model, source=source, target_index=target_index)
+            if success:
+                await sync_to_async(GameAction.objects.create)(
+                    game=game,
+                    player=player_model,
+                    action_type='PICK',
+                    data={'source': actual_source, 'card': picked_card}
+                )
+
+                broadcast_card = picked_card if actual_source == 'choice' else None
+
+                await self.broadcast_action({
+                    'type': 'player_pick',
+                    'player_index': player_index,
+                    'player_name': player_name,
+                    'source': actual_source,
+                    'card': broadcast_card
+                })
         except Exception as e:
             print(f"Error in pick_card: {e}")
 
@@ -62,15 +84,31 @@ class GameConsumer(AsyncWebsocketConsumer):
             players_models = await sync_to_async(list)(game.players.all().order_by('created_at'))
             player_model = await sync_to_async(Player.objects.get)(name=player_name, game=game)
             
+            player_index = -1
+            for i, p in enumerate(players_models):
+                if p.id == player_model.id:
+                    player_index = i
+                    break
+
             turn_player_model = players_models[game.turn_player_index % len(players_models)]
             if player_model.id != turn_player_model.id:
                 return
 
-            if await sync_to_async(self.run_player_turn)(player_model, card_index=card_index):
-                await self.broadcast_refresh()
-                # AI turns will be kicked off by the next 'get_game_state' or already running loop
-            else:
-                await self.broadcast_refresh()
+            success, discarded_card, _ = await sync_to_async(self.run_player_turn)(player_model, card_index=card_index)
+            if success:
+                await sync_to_async(GameAction.objects.create)(
+                    game=game,
+                    player=player_model,
+                    action_type='DISCARD',
+                    data={'card': discarded_card}
+                )
+
+                await self.broadcast_action({
+                    'type': 'player_discard',
+                    'player_index': player_index,
+                    'player_name': player_name,
+                    'card': discarded_card
+                })
         except Exception as e:
             print(f"Error in discard_card: {e}")
 
@@ -92,35 +130,47 @@ class GameConsumer(AsyncWebsocketConsumer):
             source = 'deck'
             if game.visibles and random.random() > 0.5: source = 'choice'
             
-            await sync_to_async(self.run_player_turn)(current_player_model, source=source)
+            success, picked_card, actual_source = await sync_to_async(self.run_player_turn)(current_player_model, source=source)
             
-            # Fetch latest card for animation
-            current_player_model = await sync_to_async(Player.objects.get)(id=current_player_model.id)
-            picked_card = current_player_model.hand[-1]
-            
-            await self.broadcast_action({
-                'type': 'ai_pick',
-                'player_index': ai_index,
-                'source': source,
-                'card': picked_card
-            })
-            await asyncio.sleep(1.5) # Wait for pick animation
+            if success:
+                await sync_to_async(GameAction.objects.create)(
+                    game=game,
+                    player=current_player_model,
+                    action_type='PICK',
+                    data={'source': actual_source, 'card': picked_card}
+                )
+
+                broadcast_card = picked_card if actual_source == 'choice' else None
+
+                await self.broadcast_action({
+                    'type': 'ai_pick',
+                    'player_index': ai_index,
+                    'player_name': current_player_model.name,
+                    'source': actual_source,
+                    'card': broadcast_card
+                })
+                await asyncio.sleep(1.5) # Wait for pick animation
             
             # 2. AI Discards
             # Refresh model state
             current_player_model = await sync_to_async(Player.objects.get)(id=current_player_model.id)
-            await sync_to_async(self.run_player_turn)(current_player_model)
+            success, discarded_card, _ = await sync_to_async(self.run_player_turn)(current_player_model)
             
-            # Refresh game to get the discarded card from visibles
-            game = await sync_to_async(Game.objects.get)(id=game.id)
-            discarded_card = game.visibles[-1]
-            
-            await self.broadcast_action({
-                'type': 'ai_discard',
-                'player_index': ai_index,
-                'card': discarded_card
-            })
-            await asyncio.sleep(1.5) # Wait for discard animation
+            if success:
+                await sync_to_async(GameAction.objects.create)(
+                    game=game,
+                    player=current_player_model,
+                    action_type='DISCARD',
+                    data={'card': discarded_card}
+                )
+
+                await self.broadcast_action({
+                    'type': 'ai_discard',
+                    'player_index': ai_index,
+                    'player_name': current_player_model.name,
+                    'card': discarded_card
+                })
+                await asyncio.sleep(1.5) # Wait for discard animation
 
     async def broadcast_action(self, action):
         # Notify all clients about a specific AI action

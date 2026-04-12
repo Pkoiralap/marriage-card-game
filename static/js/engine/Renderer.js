@@ -252,11 +252,11 @@ export class Renderer {
         });
     }
 
-    animateCard(sourcePos, targetPos, cardData, isFaceDown, onComplete, targetQuat = null, sourceQuat = null) {
-        const geometry = new THREE.BoxGeometry(CARD_WIDTH, CARD_HEIGHT, CARD_THICKNESS);
-        const backTexture = createCardBackTexture(this.threeRenderer);
+    animateCard(sourcePos, targetPos, cardData, isFaceDown, onComplete, targetQuat = null, sourceQuat = null, existingMesh = null) {
+        let mesh = existingMesh;
+        
         const sideMaterial = new THREE.MeshBasicMaterial({ color: 0xeeeeee });
-        const backMaterial = new THREE.MeshBasicMaterial({ map: backTexture, transparent: true });
+        const backMaterial = new THREE.MeshBasicMaterial({ map: createCardBackTexture(this.threeRenderer), transparent: true });
         
         let frontMaterial;
         if (cardData && !isFaceDown) {
@@ -264,15 +264,24 @@ export class Renderer {
             const texture = createCardTexture(cardData.number, cardData.suit, color, this.threeRenderer);
             frontMaterial = new THREE.MeshBasicMaterial({ map: texture, transparent: true });
         } else {
-            // Face down or no data - use back texture for front side too
             frontMaterial = backMaterial;
         }
-
         const materials = [sideMaterial, sideMaterial, sideMaterial, sideMaterial, frontMaterial, backMaterial];
-        const mesh = new THREE.Mesh(geometry, materials);
+
+        if (!mesh) {
+            const geometry = new THREE.BoxGeometry(CARD_WIDTH, CARD_HEIGHT, CARD_THICKNESS);
+            mesh = new THREE.Mesh(geometry, materials);
+        } else {
+            // Update materials of existing mesh
+            mesh.material = materials;
+        }
+
         mesh.renderOrder = 1000; // Always in front
-        // Keep depthTest enabled so it feels like it's in the world, but use high renderOrder
         
+        // Ensure mesh is in animation group and has correct starting transform
+        if (mesh.parent) mesh.parent.remove(mesh);
+        this.animationGroup.add(mesh);
+
         mesh.position.copy(sourcePos);
         if (sourceQuat) {
             mesh.quaternion.copy(sourceQuat);
@@ -284,21 +293,29 @@ export class Renderer {
             }
         }
         
-        this.animationGroup.add(mesh);
-
         const anim = {
             mesh,
             startTime: performance.now(),
-            duration: 600, // Increased for smoother feel
+            duration: 600,
             startPos: sourcePos.clone(),
             targetPos: targetPos.clone(),
-            startQuat: sourceQuat ? sourceQuat.clone() : mesh.quaternion.clone(),
+            startQuat: mesh.quaternion.clone(),
             targetQuat: targetQuat ? targetQuat.clone() : null,
             onComplete,
             isFaceDown
         };
         
         this.activeAnimations.push(anim);
+    }
+
+    extractCardMesh(cardId) {
+        // Search in deckGroup (choice/discard pile)
+        const mesh = this.deckGroup.children.find(m => m.userData.card && m.userData.card.id === cardId);
+        if (mesh) {
+            this.deckGroup.remove(mesh);
+            return mesh;
+        }
+        return null;
     }
 
     addOpponents() {

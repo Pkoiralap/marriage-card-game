@@ -182,6 +182,57 @@ h1 {
     border: 1px solid #555;
 }
 
-.btn-cancel:hover {
-    background-color: #333;
+/* Game Log */
+#game-log {
+    position: absolute;
+    top: 20px;
+    left: 20px;
+    width: 250px;
+    max-height: 200px;
+    background-color: rgba(0, 0, 0, 0.6);
+    backdrop-filter: blur(4px);
+    border-radius: var(--radius);
+    padding: 10px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column-reverse; /* Newest logs at bottom, but we can also use normal flow */
+    pointer-events: none; /* Don't block clicking cards underneath */
+    z-index: 100;
+    font-size: 0.85rem;
+    color: #eee;
+    box-shadow: 0 4px 10px rgba(0,0,0,0.3);
+    border: 1px solid rgba(255,255,255,0.1);
+}
+
+.log-entry {
+    margin-bottom: 4px;
+    padding: 4px 8px;
+    border-bottom: 1px solid rgba(255,255,255,0.05);
+    animation: slideInLeft 0.3s ease-out;
+}
+
+@keyframes slideInLeft {
+    from { opacity: 0; transform: translateX(-10px); }
+    to { opacity: 1; transform: translateX(0); }
+}
+
+.log-player {
+    font-weight: bold;
+    color: var(--primary-color);
+}
+
+.log-card {
+    color: #ffd700; /* Gold for card names */
+}
+
+/* Scrollbar for log */
+#game-log::-webkit-scrollbar {
+    width: 4px;
+}
+#game-log::-webkit-scrollbar-track {
+    background: transparent;
+}
+#game-log::-webkit-scrollbar-thumb {
+    background: rgba(255,255,255,0.2);
+    border-radius: 2px;
 }
