@@ -22,7 +22,8 @@ export class SocketManager {
             const message = JSON.parse(data.message);
             if (message.type === 'game_state') {
                 this.onStateUpdate(message.state);
-            } else if (message.type === 'ai_action') {
+            } else if (message.type === 'ai_action' || message.type === 'game_action' || message.type === 'player_action') {
+                // Ensure all action message types are handled
                 if (this.onAction) this.onAction(message.action);
             } else if (message.type === 'refresh_state') {
                 this.send({ type: 'get_game_state', player_name: this.playerName });
@@ -42,6 +43,34 @@ export class SocketManager {
 
     discardCard(cardIndex) {
         this.send({ type: 'discard_card', player_name: this.playerName, card_index: cardIndex });
+    }
+
+    registerSequence(sequenceId, cardIndices) {
+        this.send({ type: 'register_sequence', player_name: this.playerName, sequence_id: sequenceId, card_indices: cardIndices });
+    }
+
+    registerTunnela(cardIndices) {
+        this.send({ type: 'register_tunnela', player_name: this.playerName, card_indices: cardIndices });
+    }
+
+    registerDublee(cardIndices) {
+        this.send({ type: 'register_dublee', player_name: this.playerName, card_indices: cardIndices });
+    }
+
+    cancelSequence() {
+        this.send({ type: 'cancel_sequence', player_name: this.playerName });
+    }
+
+    confirmMaal(cardId) {
+        this.send({ type: 'select_maal', player_name: this.playerName, card_id: cardId });
+    }
+
+    reorderHand(oldIndex, newIndex) {
+        this.send({ type: 'reorder_hand', player_name: this.playerName, old_index: oldIndex, new_index: newIndex });
+    }
+
+    claimGame() {
+        this.send({ type: 'claim_game', player_name: this.playerName });
     }
 
     send(data) {

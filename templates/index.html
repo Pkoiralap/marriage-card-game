@@ -62,6 +62,33 @@
     <div id="game-container">
         <!-- D3/Three.js content will go here -->
         <div id="game-log"></div>
+        <div id="shown-sequences-container"></div>
+    ...
+        <div id="game-controls">
+            <button id="show-sequence-btn" class="btn btn-primary btn-sm">Show Sequence</button>
+            <button id="show-tunnela-btn" class="btn btn-primary btn-sm" style="display: none;">Show Tunnela</button>
+            <button id="show-dublee-btn" class="btn btn-primary btn-sm" style="display: none;">Show Dublee</button>
+            <button id="claim-game-btn" class="btn btn-secondary btn-sm" style="display: none;">Claim Game</button>
+        </div>
+
+        <div id="sequence-controls" style="display: none;">
+            <button id="validate-seq-btn" class="btn btn-secondary btn-sm">Validate Sequence</button>
+            <button id="cancel-sequence-btn" class="btn btn-cancel btn-sm">Cancel</button>
+        </div>
+    </div>
+
+    <!-- Maal Selection Modal -->
+    <div id="maal-modal" class="modal">
+        <div class="modal-content" style="max-width: 600px;">
+            <h2>Select Maal Card</h2>
+            <p>Select a card from the deck to be the Maal card. This card will be placed at the bottom of the deck.</p>
+            <div id="maal-card-list" class="card-slider">
+                <!-- Cards will be dynamically added here -->
+            </div>
+            <div class="modal-actions">
+                <button id="confirm-maal-btn" class="btn btn-sm btn-primary">Confirm Maal</button>
+            </div>
+        </div>
     </div>
 
     <script type="module" src="{% static 'js/main.js' %}"></script>

@@ -14,6 +14,11 @@ export class InputHandler {
         this.dragOffset = new THREE.Vector3();
         this.hoverIndex = -1;
         
+        // Multi-selection state
+        this.isSelectionMode = false;
+        this.selectedIndices = new Set();
+        this.registeredIndices = new Set(); // Indices of cards already in a sequence
+        
         // Ghost card for dragging from source
         this.ghostCard = null;
         this.dragSource = null; // 'deck' or 'choice'
@@ -72,19 +77,33 @@ export class InputHandler {
         const handIntersects = this.raycaster.intersectObjects(this.renderer.cardsGroup.children);
         if (handIntersects.length > 0) {
             const mesh = handIntersects[0].object;
-                            if (mesh.userData && mesh.userData.index !== undefined) {
-                                this.isDragging = true;
-                                this.draggedCardMesh = mesh;
-                                
-                                // Align plane to camera
-                                this.renderer.interactionPlane.quaternion.copy(this.renderer.camera.quaternion);
-                                
-                                const viewDir = new THREE.Vector3();
-                                this.renderer.camera.getWorldDirection(viewDir);
-                                const liftVector = viewDir.clone().multiplyScalar(-2.5);
+            const index = mesh.userData.index;
+
+            if (this.isSelectionMode) {
+                // Cannot select already registered cards
+                if (this.registeredIndices.has(index)) return;
+
+                if (this.selectedIndices.has(index)) {
+                    this.selectedIndices.delete(index);
+                } else if (this.selectedIndices.size < 5) {
+                    this.selectedIndices.add(index);
+                }
+                return;
+            }
+
+            if (mesh.userData && index !== undefined) {
+                this.isDragging = true;
+                this.draggedCardMesh = mesh;
+                
+                // Align plane to camera
+                this.renderer.interactionPlane.quaternion.copy(this.renderer.camera.quaternion);
+                
+                const viewDir = new THREE.Vector3();
+                this.renderer.camera.getWorldDirection(viewDir);
+                const liftVector = viewDir.clone().multiplyScalar(-2.5);
             
-                                this.renderer.interactionPlane.position.copy(mesh.position).add(liftVector);
-                                this.renderer.interactionPlane.updateMatrixWorld();
+                this.renderer.interactionPlane.position.copy(mesh.position).add(liftVector);
+                this.renderer.interactionPlane.updateMatrixWorld();
                             const planeIntersect = this.raycaster.intersectObject(this.renderer.interactionPlane);
                 if (planeIntersect.length > 0) {
                     const targetPos = mesh.position.clone().add(liftVector);
@@ -99,7 +118,7 @@ export class InputHandler {
         }
 
         // Check for deck or choice card
-        if (this.game.turnStep === 'PICK') {
+        if (this.game.turnStep === 'PICK' && !this.isSelectionMode) {
             const deckIntersects = this.raycaster.intersectObjects(this.renderer.deckGroup.children);
             if (deckIntersects.length > 0) {
                 const mesh = deckIntersects[0].object;
@@ -162,6 +181,11 @@ export class InputHandler {
                 const newIndex = this.hoverIndex;
                 if (newIndex !== -1 && newIndex !== oldIndex) {
                     this.game.reorderHand(oldIndex, newIndex);
+                    if (this.callbacks.reorderHand) {
+                        this.callbacks.reorderHand(oldIndex, newIndex);
+                    }
+                    // Update registered indices after reorder
+                    this.updateRegisteredIndicesAfterReorder(oldIndex, newIndex);
                 }
                 this.isDragging = false;
                 this.draggedCardMesh = null;
@@ -175,6 +199,15 @@ export class InputHandler {
                 this.cleanupDrag();
             }
         }
+    }
+
+    updateRegisteredIndicesAfterReorder(oldIdx, newIdx) {
+        // Logic to shift registered indices if needed
+        // Since we are rebuilding the hand meshes based on indices in animate, 
+        // if we just reordered the game.hand array, the indices mapping might change.
+        // But game.reorderHand handles the array, and InputHandler animate handles the meshes.
+        // Actually, better if GameController provides the absolute indices.
+        // Let's assume for now the caller (GameController) will reset registeredIndices.
     }
 
     cleanupDrag() {
@@ -259,6 +292,15 @@ export class InputHandler {
         return { position: pos, quaternion: rotQuat };
     }
 
+    setSelectionMode(enabled) {
+        this.isSelectionMode = enabled;
+        this.selectedIndices.clear();
+    }
+
+    getSelectedIndices() {
+        return Array.from(this.selectedIndices);
+    }
+
     animate() {
         if (!this.game.me) return;
         const currentHand = this.game.me.hand;
@@ -301,6 +343,23 @@ export class InputHandler {
             }
 
             const target = this.getCardTransform(targetIndex, fanSize);
+
+            // Selection / Registration lift - push vertically "upwards" relative to camera view
+            if (this.selectedIndices.has(myIndex) || this.registeredIndices.has(myIndex)) {
+                const viewDir = new THREE.Vector3();
+                this.renderer.camera.getWorldDirection(viewDir);
+                const up = new THREE.Vector3(0, 1, 0);
+                const right = new THREE.Vector3().crossVectors(viewDir, up).normalize();
+                const screenUp = new THREE.Vector3().crossVectors(right, viewDir).normalize();
+                
+                // Lift "upwards" on the screen (which is screenUp)
+                const liftAmount = this.selectedIndices.has(myIndex) ? 1.5 : 2.5;
+                target.position.add(screenUp.clone().multiplyScalar(liftAmount));
+                
+                // User requested: "must not change their z value"
+                // Removed the viewDir (towards camera) lift.
+            }
+
             const lerpFactor = (this.ghostCard || this.isDragging || mesh === this.settlingMesh) ? 0.3 : 0.15;
             
             // Special handling for settling mesh to keep it in front
@@ -323,6 +382,7 @@ export class InputHandler {
                 mesh.position.lerp(target.position, lerpFactor);
                 mesh.quaternion.slerp(target.quaternion, lerpFactor);
                 
+                // Keep natural fan order even for selected cards to prevent hiding cards to the right
                 if (this.isDragging && mesh === this.draggedCardMesh) {
                     mesh.renderOrder = 1000;
                 } else {

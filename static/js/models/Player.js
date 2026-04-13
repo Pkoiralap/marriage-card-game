@@ -12,6 +12,7 @@ export class Player {
         this.dirtySets = [];
         this.maalPoints = 0;
         this.hasShownPure = false;
+        this.shownSequences = [];
     }
 
     updateHand(cardData, renderer) {

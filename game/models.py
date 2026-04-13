@@ -62,6 +62,7 @@ class Player(models.Model):
     shown_sequences = models.JSONField(default=list) # List of lists of cards
     is_dealer = models.BooleanField(default=False)
     points = models.IntegerField(default=0)
+    turn_count = models.IntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True, null=True)
 
     def __str__(self):

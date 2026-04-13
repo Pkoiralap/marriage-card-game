@@ -34,8 +34,56 @@ class GameConsumer(AsyncWebsocketConsumer):
                 await self.pick_card(message.get('player_name'), message.get('source'), message.get('target_index'))
             elif message_type == 'discard_card':
                 await self.discard_card(message.get('player_name'), message.get('card_index'))
+            elif message_type == 'register_sequence':
+                await self.register_sequence(message.get('player_name'), message.get('sequence_id'), message.get('card_indices'))
+            elif message_type == 'register_tunnela':
+                await self.register_tunnela(message.get('player_name'), message.get('card_indices'))
+            elif message_type == 'register_dublee':
+                await self.register_dublee(message.get('player_name'), message.get('card_indices'))
+            elif message_type == 'select_maal':
+                await self.select_maal(message.get('player_name'), message.get('card_id'))
+            elif message_type == 'cancel_sequence':
+                await self.cancel_sequence(message.get('player_name'))
+            elif message_type == 'reorder_hand':
+                await self.reorder_hand(message.get('player_name'), message.get('old_index'), message.get('new_index'))
+            elif message_type == 'claim_game':
+                await self.claim_game(message.get('player_name'))
         except Exception as e:
             print(f"Error in receive: {e}")
+
+    async def claim_game(self, player_name):
+        try:
+            game = await sync_to_async(Game.objects.get)(id=self.room_name)
+            player_model = await sync_to_async(Player.objects.get)(name=player_name, game=game)
+            
+            # Logic: verify player has only 1 card and has shown sequences
+            # For now, just trust the client and broadcast winner
+            if len(player_model.hand) == 1:
+                game.is_active = False
+                await sync_to_async(game.save)()
+                
+                await self.broadcast_action({
+                    'type': 'GAME_CLAIMED',
+                    'player_name': player_name,
+                    'message': f"{player_name} has won the game!"
+                })
+        except Exception as e:
+            print(f"Error in claim_game: {e}")
+
+    async def reorder_hand(self, player_name, old_index, new_index):
+        try:
+            game = await sync_to_async(Game.objects.get)(id=self.room_name)
+            player_model = await sync_to_async(Player.objects.get)(name=player_name, game=game)
+            
+            hand = list(player_model.hand)
+            if 0 <= old_index < len(hand) and 0 <= new_index < len(hand):
+                card = hand.pop(old_index)
+                hand.insert(new_index, card)
+                player_model.hand = hand
+                await sync_to_async(player_model.save)()
+                # No need to broadcast, only the reordering player cares
+        except Exception as e:
+            print(f"Error in reorder_hand: {e}")
 
     def run_player_turn(self, player_model, **kwargs):
         player = HumanPlayer(player_model) if player_model.player_type == 'HUMAN' else AIPlayer(player_model)
@@ -96,6 +144,9 @@ class GameConsumer(AsyncWebsocketConsumer):
 
             success, discarded_card, _ = await sync_to_async(self.run_player_turn)(player_model, card_index=card_index)
             if success:
+                player_model.turn_count += 1
+                await sync_to_async(player_model.save)()
+
                 await sync_to_async(GameAction.objects.create)(
                     game=game,
                     player=player_model,
@@ -111,6 +162,131 @@ class GameConsumer(AsyncWebsocketConsumer):
                 })
         except Exception as e:
             print(f"Error in discard_card: {e}")
+
+    async def register_sequence(self, player_name, sequence_id, card_indices):
+        try:
+            game = await sync_to_async(Game.objects.get)(id=self.room_name)
+            player_model = await sync_to_async(Player.objects.get)(name=player_name, game=game)
+            
+            # Logic: verify indices are valid and cards form a sequence
+            # For now, just stub it
+            cards = [player_model.hand[i] for i in card_indices]
+            
+            # Update shown_sequences (Don't remove from hand yet!)
+            current_sequences = player_model.shown_sequences
+            current_sequences.append(cards)
+            
+            player_model.shown_sequences = current_sequences
+            
+            all_done = len([s for s in current_sequences if s]) >= 3
+            
+            if all_done:
+                # ONLY NOW remove all cards from hand
+                registered_ids = set()
+                for seq in current_sequences:
+                    for c in seq:
+                        registered_ids.add(c['id'])
+                
+                new_hand = [c for c in player_model.hand if c['id'] not in registered_ids]
+                player_model.hand = new_hand
+
+            await sync_to_async(player_model.save)()
+            needs_maal = all_done and game.maal_card is None
+            
+            # Broadcast the success
+            await self.broadcast_action({
+                'type': 'SHOW_SEQUENCE_SUCCESS',
+                'player_name': player_name,
+                'sequence_id': sequence_id,
+                'all_sequences_done': all_done,
+                'needs_maal_selection': needs_maal,
+                'unseen_cards': game.deck if needs_maal else []
+            })
+        except Exception as e:
+            print(f"Error in register_sequence: {e}")
+
+    async def register_tunnela(self, player_name, card_indices):
+        try:
+            game = await sync_to_async(Game.objects.get)(id=self.room_name)
+            player_model = await sync_to_async(Player.objects.get)(name=player_name, game=game)
+            if player_model.turn_count > 0: return 
+            
+            cards = [player_model.hand[i] for i in card_indices]
+            # Stub
+            await self.broadcast_action({
+                'type': 'SHOW_TUNNELA_SUCCESS',
+                'player_name': player_name,
+                'cards': cards
+            })
+        except Exception as e:
+            print(f"Error in register_tunnela: {e}")
+
+    async def register_dublee(self, player_name, card_indices):
+        try:
+            game = await sync_to_async(Game.objects.get)(id=self.room_name)
+            player_model = await sync_to_async(Player.objects.get)(name=player_name, game=game)
+            
+            cards = [player_model.hand[i] for i in card_indices]
+            current_sequences = player_model.shown_sequences
+            current_sequences.append(cards)
+            player_model.shown_sequences = current_sequences
+            await sync_to_async(player_model.save)()
+
+            # For dublee, need 7 or 8. Let's say 7 for maal, 8 for win.
+            all_done = len(current_sequences) >= 7
+            needs_maal = all_done and game.maal_card is None
+
+            await self.broadcast_action({
+                'type': 'SHOW_DUBLEE_SUCCESS',
+                'player_name': player_name,
+                'all_sequences_done': all_done,
+                'needs_maal_selection': needs_maal,
+                'unseen_cards': game.deck if needs_maal else []
+            })
+        except Exception as e:
+            print(f"Error in register_dublee: {e}")
+
+    async def cancel_sequence(self, player_name):
+        try:
+            game = await sync_to_async(Game.objects.get)(id=self.room_name)
+            player_model = await sync_to_async(Player.objects.get)(name=player_name, game=game)
+            player_model.shown_sequences = []
+            await sync_to_async(player_model.save)()
+            
+            await self.broadcast_action({
+                'type': 'SHOW_SEQUENCE_CANCEL',
+                'player_name': player_name
+            })
+        except Exception as e:
+            print(f"Error in cancel_sequence: {e}")
+
+    async def select_maal(self, player_name, card_id):
+        try:
+            game = await sync_to_async(Game.objects.get)(id=self.room_name)
+            # Find the card in the deck
+            card_to_move = None
+            new_deck = []
+            for c in game.deck:
+                if c['id'] == card_id:
+                    card_to_move = c
+                else:
+                    new_deck.append(c)
+            
+            if card_to_move:
+                # Place at bottom
+                new_deck.insert(0, card_to_move)
+                game.deck = new_deck
+                game.maal_card = card_to_move
+                game.phase = 'MAAL_REVEALED'
+                await sync_to_async(game.save)()
+
+                await self.broadcast_action({
+                    'type': 'MAAL_SELECTED',
+                    'player_name': player_name,
+                    'card': card_to_move
+                })
+        except Exception as e:
+            print(f"Error in select_maal: {e}")
 
     async def handle_ai_turns(self):
         while True:
@@ -157,6 +333,9 @@ class GameConsumer(AsyncWebsocketConsumer):
             success, discarded_card, _ = await sync_to_async(self.run_player_turn)(current_player_model)
             
             if success:
+                current_player_model.turn_count += 1
+                await sync_to_async(current_player_model.save)()
+
                 await sync_to_async(GameAction.objects.create)(
                     game=game,
                     player=current_player_model,
@@ -201,26 +380,37 @@ class GameConsumer(AsyncWebsocketConsumer):
                 players_data.append({
                     'name': p.name,
                     'player_type': p.player_type,
-                    'hand_size': len(p.hand)
+                    'hand_size': len(p.hand),
+                    'has_shown': len([s for s in p.shown_sequences if s]) >= 3
                 })
+
+            visible_maal = None
+            if len([s for s in player.shown_sequences if s]) >= 3:
+                visible_maal = game.maal_card
+
+            show_allowed = (game.turn_step == 'DISCARD') or (player.turn_count == 0)
 
             state = {
                 'hand': player.hand,
+                'shown_sequences': player.shown_sequences,
                 'points': player.points,
+                'turn_count': player.turn_count,
+                'show_sequence_allowed': show_allowed,
                 'deck_count': len(game.deck),
                 'visibles': game.visibles,
                 'choice_card': game.visibles[-1] if game.visibles else None,
                 'turn_player_index': game.turn_player_index,
                 'turn_step': game.turn_step,
                 'phase': game.phase,
-                'players': players_data
+                'players': players_data,
+                'maal_card': visible_maal
             }
             
             await self.send(text_data=json.dumps({
                 'message': json.dumps({'type': 'game_state', 'state': state})
             }))
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"Error in send_game_state: {e}")
 
     async def game_message(self, event):
         await self.send(text_data=json.dumps({'message': event['message']}))

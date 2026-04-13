@@ -51,6 +51,9 @@ export class Game {
         }
         
         // Update game context
+        if (state.shown_sequences !== undefined && this.me) {
+            this.me.shownSequences = state.shown_sequences;
+        }
         if (state.phase) this.phase = state.phase;
         if (state.tiplu) this.tiplu = state.tiplu;
         if (state.stock_count !== undefined) this.stockPileCount = state.stock_count;

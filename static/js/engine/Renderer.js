@@ -178,8 +178,13 @@ export class Renderer {
     }
 
     updateDeck(stockPileCount) {
+        if (stockPileCount === undefined || isNaN(stockPileCount)) stockPileCount = 0;
         const stackHeight = Math.min(20, Math.ceil(stockPileCount / 5));
-        if (this.deckGroup.children.filter(m => m.userData.type === 'deck').length === stackHeight) return;
+        if (this.deckGroup.children.filter(m => m.userData.type === 'deck').length === stackHeight) {
+             // Still need to update maal card position if deck height changes
+             this.updateMaalCardPosition();
+             return;
+        }
         this.deckGroup.children.filter(m => m.userData.type === 'deck').forEach(m => this.deckGroup.remove(m));
 
         const geometry = new THREE.BoxGeometry(CARD_WIDTH, CARD_HEIGHT, CARD_THICKNESS);
@@ -197,6 +202,40 @@ export class Renderer {
             mesh.userData.type = 'deck';
             this.deckGroup.add(mesh);
         }
+        this.updateMaalCardPosition();
+    }
+
+    updateMaalCard(cardData) {
+        if (!cardData) return;
+        
+        let mesh = this.deckGroup.children.find(m => m.userData.type === 'maal');
+        const sideMaterial = new THREE.MeshBasicMaterial({ color: 0xeeeeee });
+        const backMaterial = new THREE.MeshBasicMaterial({ map: createCardBackTexture(this.threeRenderer), transparent: true });
+        const color = (cardData.suit === 'HEART' || cardData.suit === 'DIAMOND') ? 'red' : 'black';
+        const texture = createCardTexture(cardData.number, cardData.suit, color, this.threeRenderer);
+        const frontMaterial = new THREE.MeshBasicMaterial({ map: texture, transparent: true });
+        const materials = [sideMaterial, sideMaterial, sideMaterial, sideMaterial, frontMaterial, backMaterial];
+
+        if (mesh) {
+            mesh.material = materials;
+            mesh.userData.card = cardData;
+        } else {
+            const geometry = new THREE.BoxGeometry(CARD_WIDTH, CARD_HEIGHT, CARD_THICKNESS);
+            mesh = new THREE.Mesh(geometry, materials);
+            mesh.userData.type = 'maal';
+            mesh.userData.card = cardData;
+            this.deckGroup.add(mesh);
+        }
+        this.updateMaalCardPosition();
+    }
+
+    updateMaalCardPosition() {
+        const mesh = this.deckGroup.children.find(m => m.userData.type === 'maal');
+        if (!mesh) return;
+
+        // Place it at the bottom, offset so it's "half showing" from under the deck
+        mesh.position.set(DECK_POS.x, DECK_POS.y - 0.1, DECK_POS.z + CARD_HEIGHT * 0.4);
+        mesh.rotation.set(-Math.PI / 2, 0, 0); // Face up
     }
 
     updateChoiceCard(visibles) {
@@ -209,7 +248,7 @@ export class Renderer {
 
         // Remove old ones
         this.deckGroup.children.filter(m => (m.userData.type === 'choice' || m.userData.type === 'discard')).forEach(m => {
-            if (!newIds.has(m.userData.card.id)) {
+            if (m.userData.card && !newIds.has(m.userData.card.id)) {
                 this.deckGroup.remove(m);
             }
         });
@@ -316,6 +355,28 @@ export class Renderer {
             return mesh;
         }
         return null;
+    }
+
+    highlightMesh(mesh, color) {
+        if (!mesh || !mesh.material) return;
+        
+        // MeshBasicMaterial doesn't have emissive. 
+        // Let's highlight by changing the color of the side materials (indices 0-3)
+        // or just the front/back if we want a full glow.
+        // For a simple border effect, we can tint the materials.
+        if (Array.isArray(mesh.material)) {
+            mesh.material.forEach((m, i) => {
+                if (color) {
+                    // Save original color if not already saved
+                    if (m.userData.originalColor === undefined) {
+                        m.userData.originalColor = m.color.getHex();
+                    }
+                    m.color.setHex(color);
+                } else if (m.userData.originalColor !== undefined) {
+                    m.color.setHex(m.userData.originalColor);
+                }
+            });
+        }
     }
 
     addOpponents() {
