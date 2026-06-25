@@ -1,5 +1,11 @@
 import { getCookie } from '../utils/Helpers.js';
 
+// Feature-detect window.toast (installed by utils/Toast.js); fall back to alert.
+const notify = (msg, type = 'info') =>
+    (typeof window !== 'undefined' && typeof window.toast === 'function')
+        ? window.toast(msg, type)
+        : alert(msg);
+
 export class UIManager {
     constructor(callbacks) {
         this.callbacks = callbacks;
@@ -86,7 +92,7 @@ export class UIManager {
                 this.callbacks.onConfirmMaal(this.selectedMaalCardId);
                 this.maalModal.style.display = 'none';
             } else {
-                alert("Please select a card first!");
+                notify("Please select a card first!", 'warn');
             }
         });
 
@@ -97,7 +103,7 @@ export class UIManager {
 
         document.getElementById('confirm-create-btn')?.addEventListener('click', async () => {
             const playerName = this.createPlayerNameInput.value.trim();
-            if (!playerName) return alert("Please enter your name");
+            if (!playerName) return notify("Please enter your name", 'warn');
 
             const seats = this.gatherSeats(playerName);
             try {
@@ -111,16 +117,16 @@ export class UIManager {
                     this.createModal.style.display = 'none';
                     // Share the short code so others can join this game.
                     this.callbacks.startGame(data.code || data.game_id, playerName);
-                } else alert("Failed to create game");
+                } else notify("Failed to create game", 'error');
             } catch (error) {
-                console.error(error); alert("Error connecting to server");
+                console.error(error); notify("Error connecting to server", 'error');
             }
         });
 
         document.getElementById('confirm-join-btn')?.addEventListener('click', () => {
             const playerName = this.joinPlayerNameInput.value.trim();
             const gameId = this.joinGameIdInput.value.trim();
-            if (!playerName || !gameId) return alert("Please enter both name and Game ID");
+            if (!playerName || !gameId) return notify("Please enter both name and Game ID", 'warn');
             
             this.joinModal.style.display = 'none';
             this.callbacks.startGame(gameId, playerName);
@@ -271,6 +277,64 @@ export class UIManager {
     showGame() {
         this.homeContainer.style.display = 'none';
         this.gameContainer.style.display = 'block';
+    }
+
+    // --- in-game HUD: turn indicator ---------------------------------------
+    // Updates the top-center pill. Called from GameController on each state.
+    updateTurnIndicator(game) {
+        const el = document.getElementById('turn-indicator');
+        if (!el || !game || !game.players || game.players.length === 0) {
+            if (el) el.style.display = 'none';
+            return;
+        }
+        if (game.phase === 'DEALING') {
+            el.classList.remove('your-turn');
+            el.textContent = 'Dealing…';
+            el.style.display = 'block';
+            return;
+        }
+        const myTurn = game.isMyTurn();
+        const active = game.players[game.turnPlayerIndex];
+        const handCount = (game.me && game.me.hand) ? game.me.hand.length : null;
+        const points = (game.me && game.me.points != null) ? game.me.points : null;
+
+        let label;
+        if (myTurn) {
+            const step = game.turnStep === 'DISCARD' ? 'Discard a card' : 'Your turn';
+            label = step;
+        } else {
+            label = `${active && active.name ? active.name : 'Opponent'}'s turn`;
+        }
+        const meta = [];
+        if (handCount != null) meta.push(`${handCount} cards`);
+        if (points != null) meta.push(`${points} pts`);
+        el.textContent = meta.length ? `${label}  ·  ${meta.join(' · ')}` : label;
+        el.classList.toggle('your-turn', myTurn);
+        el.style.display = 'block';
+    }
+
+    hideTurnIndicator() {
+        const el = document.getElementById('turn-indicator');
+        if (el) el.style.display = 'none';
+    }
+
+    // --- win / lose banner hook for GAME_CLAIMED ---------------------------
+    // outcome: 'win' | 'lose' | 'info'
+    showGameBanner(title, message, outcome = 'info', onAction) {
+        const banner = document.getElementById('game-banner');
+        if (!banner) return false;
+        const titleEl = document.getElementById('game-banner-title');
+        const msgEl = document.getElementById('game-banner-msg');
+        const btn = document.getElementById('game-banner-btn');
+        if (titleEl) titleEl.textContent = title || 'Game over';
+        if (msgEl) msgEl.textContent = message || '';
+        banner.classList.remove('win', 'lose');
+        if (outcome === 'win' || outcome === 'lose') banner.classList.add(outcome);
+        if (btn) {
+            btn.onclick = onAction || (() => location.reload());
+        }
+        banner.style.display = 'flex';
+        return true;
     }
 
     showSequenceControls() {

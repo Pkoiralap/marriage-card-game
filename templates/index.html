@@ -2,9 +2,14 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <meta name="color-scheme" content="dark">
+    <meta name="theme-color" content="#0e1014">
     <title>Marriage Card Game</title>
     {% load static %}
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap">
     <link rel="stylesheet" href="{% static 'css/style.css' %}">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 </head>
@@ -70,9 +75,10 @@
 
     <div id="game-container">
         <!-- D3/Three.js content will go here -->
+        <div id="turn-indicator"></div>
         <div id="game-log"></div>
         <div id="shown-sequences-container"></div>
-    ...
+
         <div id="game-controls">
             <button id="show-sequence-btn" class="btn btn-primary btn-sm">Show Sequence</button>
             <button id="show-tunnela-btn" class="btn btn-primary btn-sm" style="display: none;">Show Tunnela</button>
@@ -99,6 +105,18 @@
             </div>
         </div>
     </div>
+
+    <!-- Win / lose banner hook for GAME_CLAIMED (shown/populated by JS) -->
+    <div id="game-banner">
+        <div class="banner-card">
+            <h2 class="banner-title" id="game-banner-title"></h2>
+            <p class="banner-msg" id="game-banner-msg"></p>
+            <button class="btn btn-primary btn-sm" id="game-banner-btn">Play again</button>
+        </div>
+    </div>
+
+    <!-- Toast notifications mount point (window.toast) -->
+    <div id="toast-container" aria-live="polite" aria-atomic="true"></div>
 
     <script type="module" src="{% static 'js/main.js' %}"></script>
 </body>

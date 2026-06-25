@@ -24,20 +24,20 @@ export class GameController {
                     const indices = this.inputHandler.getSelectedIndices();
                     if (this.showMode === 'SEQUENCE') {
                         if (indices.length < 3 || indices.length > 5) {
-                            alert("Select 3-5 cards for a sequence");
+                            this.notify("Select 3-5 cards for a sequence", 'warn');
                             return;
                         }
                         const sequenceId = (this.game.me.shownSequences ? this.game.me.shownSequences.length : 0) + 1;
                         this.socket.registerSequence(sequenceId, indices);
                     } else if (this.showMode === 'TUNNELA') {
                         if (indices.length !== 3) {
-                            alert("Select exactly 3 cards for a tunnela");
+                            this.notify("Select exactly 3 cards for a tunnela", 'warn');
                             return;
                         }
                         this.socket.registerTunnela(indices);
                     } else if (this.showMode === 'DUBLEE') {
                         if (indices.length !== 2) {
-                            alert("Select exactly 2 cards for a dublee");
+                            this.notify("Select exactly 2 cards for a dublee", 'warn');
                             return;
                         }
                         this.socket.registerDublee(indices);
@@ -51,7 +51,7 @@ export class GameController {
                 if (this.game.me.hand.length === 1) {
                     this.socket.claimGame();
                 } else {
-                    alert("You must have only 1 card remaining to claim the game");
+                    this.notify("You must have only 1 card remaining to claim the game", 'warn');
                 }
             }
         });
@@ -73,6 +73,16 @@ export class GameController {
         
         // Check if there is a game_id in URL
         this.checkUrlForGame();
+    }
+
+    // User-facing notification. Prefers window.toast (feature-detected), falls
+    // back to alert so behavior is preserved if the toast helper isn't loaded.
+    notify(message, type = 'info') {
+        if (typeof window !== 'undefined' && typeof window.toast === 'function') {
+            window.toast(message, type);
+        } else {
+            alert(message);
+        }
     }
 
     checkUrlForGame() {
@@ -361,14 +371,26 @@ export class GameController {
         } else if (action.type.endsWith('_FAILED')) {
             // Server rejected a show (sequence/tunnela/dublee). Keep the player
             // in selection mode with their cards still selected so they can fix it.
-            alert(action.reason || "That selection isn't valid.");
+            this.notify(action.reason || "That selection isn't valid.", 'error');
         } else if (action.type === 'MAAL_SELECTED') {
             this.game.maalCard = action.card;
             this.logMessage(`<span class="log-player">${action.player_name}</span> has set the Maal card!`);
             this.renderer.updateMaalCard(action.card);
         } else if (action.type === 'GAME_CLAIMED') {
-            alert(action.message);
-            location.reload();
+            const myName = this.game.me ? this.game.me.name : null;
+            const iWon = action.player_name && myName && action.player_name === myName;
+            const title = iWon ? 'You won! 🎉' : 'Game over';
+            const msg = action.message
+                || (action.player_name ? `${action.player_name} claimed the game.` : 'The game has ended.');
+            // Prefer the styled banner; fall back to toast/alert + reload.
+            const shown = this.ui.showGameBanner(
+                title, msg, iWon ? 'win' : 'lose', () => location.reload()
+            );
+            this.ui.hideTurnIndicator();
+            if (!shown) {
+                this.notify(msg, iWon ? 'success' : 'info');
+                location.reload();
+            }
         }
     }
 
@@ -500,6 +522,7 @@ export class GameController {
         }
         this.syncRegisteredIndices();
         this.updateShownSequencesUI();
+        this.ui.updateTurnIndicator(this.game);
 
         // --- Diagnostics LAST (wrapped so a HUD error can't break rendering). ---
         try {

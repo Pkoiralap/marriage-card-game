@@ -61,3 +61,49 @@ relays messages between agents when an entry below requests it.
 
 ## Log (append entries; newest at bottom)
 - (orchestrator) Baseline at master `0054b09`. Branches not yet created.
+- (F4 UI) `feat/ui` — modernized the whole UI (dark theme, gradients, elevation,
+  soft shadows). **No DOM ids renamed or removed** (verified by grepping
+  `getElementById`/`querySelector` in `static/js/**` against `index.html`).
+  Backend tests stay green (53 passed); `node --check` passes on all changed JS.
+
+  **Design tokens** (on `:root` in `static/css/style.css`) — F1/F2 should style
+  their new UI with these:
+  - `--surface: #16181d`, `--surface-2: #20242c`, `--surface-3: #2a2f39`
+  - `--accent: #4caf50`, `--accent-2: #2196f3`
+  - `--text: #eef1f5`, `--text-dim: #9aa3b2`
+  - `--radius: 14px` (also `--radius-sm: 9px`, `--radius-lg: 20px`)
+  - `--shadow: 0 10px 30px rgba(0,0,0,.45)` (also `--shadow-sm`)
+  - extras: `--border`, `--border-strong`, `--accent-grad`, `--accent-2-grad`,
+    `--danger`, `--warning`, `--font-family`.
+  - Legacy aliases kept working: `--bg-color`, `--text-color`, `--primary-color`,
+    `--primary-hover`, `--secondary-color`, `--secondary-hover`, `--card-bg`,
+    `--table-color`.
+
+  **Toast helper** — `window.toast(message, type?, opts?)`:
+  - `type`: `'info'` (default) | `'success'` | `'error'` | `'warn'`
+  - `opts`: `{ duration?: number ms (default 3200) }`
+  - Defined in new module `static/js/utils/Toast.js` (imported by `main.js`).
+    Mount point `#toast-container` in `index.html` (auto-created if missing).
+  - F1/F2: feature-detect with `typeof window.toast === 'function'`.
+  - Replaced all user-facing `alert(...)` in `UIManager.js` + `GameController.js`
+    with toasts (behavior preserved via `alert` fallback). `SocketManager.js`
+    connection-lost alert also uses toast if present.
+
+  **Structural HTML additions** (additive only) in `templates/index.html`:
+  - `#turn-indicator` (top-center pill) inside `#game-container`.
+  - `#game-banner` (+ `#game-banner-title/-msg/-btn`) — win/lose hook for
+    `GAME_CLAIMED`, populated by `UIManager.showGameBanner(...)`.
+  - `#toast-container` before the main script.
+  - Added Inter web-font `<link>`s, `viewport-fit=cover`, `color-scheme`,
+    `theme-color` meta. Removed a stray literal `...` text node in
+    `#game-container`.
+
+  **New UIManager methods**: `updateTurnIndicator(game)`, `hideTurnIndicator()`,
+  `showGameBanner(title, msg, outcome, onAction)`. New GameController method
+  `notify(message, type)`. `applyState` now calls `ui.updateTurnIndicator`.
+
+  **Merge risks**: `style.css` was rewritten wholesale and `index.html` got
+  additive blocks — F1/F2 touching the same files will conflict. Resolution is
+  easy since F1 (`emote-`) / F2 (`chat-`) use prefixed ids/classes that don't
+  collide with anything here; take F4's `style.css`/`<head>`/token block and
+  re-apply F1/F2's prefixed additions on top.
