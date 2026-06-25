@@ -32,8 +32,15 @@ export class SocketManager {
 
         this.socket.onclose = (e) => {
             console.error('Chat socket closed unexpectedly');
-            alert("Connection lost. Returning to home.");
-            location.reload();
+            // F4: prefer themed toast if available; reload shortly after so the
+            // user can see the message instead of an abrupt jump.
+            if (typeof window !== 'undefined' && typeof window.toast === 'function') {
+                window.toast("Connection lost. Returning to home…", 'error');
+                setTimeout(() => location.reload(), 1200);
+            } else {
+                alert("Connection lost. Returning to home.");
+                location.reload();
+            }
         };
     }
 

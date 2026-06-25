@@ -61,3 +61,84 @@ relays messages between agents when an entry below requests it.
 
 ## Log (append entries; newest at bottom)
 - (orchestrator) Baseline at master `0054b09`. Branches not yet created.
+- (F4 UI) `feat/ui` — modernized the whole UI (dark theme, gradients, elevation,
+  soft shadows). **No DOM ids renamed or removed** (verified by grepping
+  `getElementById`/`querySelector` in `static/js/**` against `index.html`).
+  Backend tests stay green (53 passed); `node --check` passes on all changed JS.
+
+  **Design tokens** (on `:root` in `static/css/style.css`) — F1/F2 should style
+  their new UI with these:
+  - `--surface: #16181d`, `--surface-2: #20242c`, `--surface-3: #2a2f39`
+  - `--accent: #4caf50`, `--accent-2: #2196f3`
+  - `--text: #eef1f5`, `--text-dim: #9aa3b2`
+  - `--radius: 14px` (also `--radius-sm: 9px`, `--radius-lg: 20px`)
+  - `--shadow: 0 10px 30px rgba(0,0,0,.45)` (also `--shadow-sm`)
+  - extras: `--border`, `--border-strong`, `--accent-grad`, `--accent-2-grad`,
+    `--danger`, `--warning`, `--font-family`.
+  - Legacy aliases kept working: `--bg-color`, `--text-color`, `--primary-color`,
+    `--primary-hover`, `--secondary-color`, `--secondary-hover`, `--card-bg`,
+    `--table-color`.
+
+  **Toast helper** — `window.toast(message, type?, opts?)`:
+  - `type`: `'info'` (default) | `'success'` | `'error'` | `'warn'`
+  - `opts`: `{ duration?: number ms (default 3200) }`
+  - Defined in new module `static/js/utils/Toast.js` (imported by `main.js`).
+    Mount point `#toast-container` in `index.html` (auto-created if missing).
+  - F1/F2: feature-detect with `typeof window.toast === 'function'`.
+  - Replaced all user-facing `alert(...)` in `UIManager.js` + `GameController.js`
+    with toasts (behavior preserved via `alert` fallback). `SocketManager.js`
+    connection-lost alert also uses toast if present.
+
+  **Structural HTML additions** (additive only) in `templates/index.html`:
+  - `#turn-indicator` (top-center pill) inside `#game-container`.
+  - `#game-banner` (+ `#game-banner-title/-msg/-btn`) — win/lose hook for
+    `GAME_CLAIMED`, populated by `UIManager.showGameBanner(...)`.
+  - `#toast-container` before the main script.
+  - Added Inter web-font `<link>`s, `viewport-fit=cover`, `color-scheme`,
+    `theme-color` meta. Removed a stray literal `...` text node in
+    `#game-container`.
+
+  **New UIManager methods**: `updateTurnIndicator(game)`, `hideTurnIndicator()`,
+  `showGameBanner(title, msg, outcome, onAction)`. New GameController method
+  `notify(message, type)`. `applyState` now calls `ui.updateTurnIndicator`.
+
+  **Merge risks**: `style.css` was rewritten wholesale and `index.html` got
+  additive blocks — F1/F2 touching the same files will conflict. Resolution is
+  easy since F1 (`emote-`) / F2 (`chat-`) use prefixed ids/classes that don't
+  collide with anything here; take F4's `style.css`/`<head>`/token block and
+  re-apply F1/F2's prefixed additions on top.
+
+- (QA UI) Reviewed `feat/ui` @ `2edb412` (`git diff master...HEAD`). **PASS — no
+  bugs found; no code changes needed.** Verified:
+  - **DOM id/selector coverage (top risk):** grepped every `getElementById`
+    (36 unique ids) and `querySelector(All)` (4 selectors: `.seat-row`,
+    `.seat-name`, `.seat-type`, `.card-slider-item`) across `static/js/**`.
+    Every referenced id exists in `templates/index.html`; the 4 selectors target
+    elements UIManager creates at runtime (seat config / maal slider) and all
+    have matching CSS. No id was renamed or removed. `#toast-container` exists in
+    HTML and Toast.js also auto-creates it if missing.
+  - **Toast:** `window.toast` installed at module-eval via `main.js` import
+    (before `DOMContentLoaded`), so it's defined before any caller. All three
+    remaining `alert(` calls (UIManager `notify` helper, GameController `notify`,
+    SocketManager onclose) are feature-detect fallbacks — graceful if Toast fails
+    to load. Every former `alert` path still informs the user.
+  - **Turn indicator / banner:** `updateTurnIndicator(game)` guards null/empty
+    `players`, missing `me`, missing `hand`/`points`; uses real Game props
+    (`isMyTurn`, `phase`, `turnPlayerIndex`, `turnStep`). `active.name` resolves
+    (server `players_data` includes `name`). `showGameBanner` no-ops safely if
+    `#game-banner` absent and GAME_CLAIMED falls back to toast+reload. Banner
+    "Play again" → `location.reload()` preserves original GAME_CLAIMED behavior.
+  - **Layout/z-index:** modals (1000) < banner (1500) < toasts (4000); HUD pills
+    (100–200) below. `#turn-indicator` and `#game-log` use `pointer-events:none`
+    so they don't block the canvas/cards. Mobile media query raises controls
+    above the browser toolbar (`+90px`) and shrinks log/sequences. safe-area
+    insets applied throughout without pushing controls off-screen.
+  - **Tokens:** all contract tokens present on `:root` (`--surface/-2/-3`,
+    `--accent/-2`, `--text/-dim`, `--radius`, `--shadow`) + legacy aliases +
+    extras. All 5 `@keyframes` referenced are defined.
+  - **Tests:** backend `manage.py test game` → **53 passed** (UI untouched
+    backend). `node --check` passes on all changed JS and all `static/js/**`.
+  - **Merge notes:** unchanged from F4 — F1/F2 take F4's `style.css`/`<head>`/
+    tokens wholesale and re-apply their prefixed (`emote-`/`chat-`) additions;
+    F1/F2 should style new UI with the `:root` tokens and feature-detect
+    `window.toast`.
