@@ -7,7 +7,10 @@ including the rules/AI layer. Filled in by the gesture (F1) and chat (F2) agents
 # F1 (gestures): list of allowed gesture name strings. Must match the gestures
 # implemented in static/js/engine/Avatar.js (_applyGesture).
 GESTURES = [
-    # e.g. "wave", "nod", "shake", "jump", "celebrate", ...
+    # F1: must stay in sync with Avatar._applyGesture in
+    # static/js/engine/Avatar.js (one entry per implemented gesture).
+    "wave", "nod", "shake", "jump", "celebrate",
+    "cry", "think", "point", "clap", "facepalm", "shrug",
 ]
 
 # F2 (chat): allowed quick-chat phrases. Each entry: {"id", "text", optional "gesture"}.

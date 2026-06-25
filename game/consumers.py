@@ -19,6 +19,7 @@ from .logic import (
     claim_discard_index,
 )
 from .rules import Card, is_sequence, is_tunnela, is_dublee
+from . import emotes  # F1: gesture allowlist (is_valid_gesture)
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +49,7 @@ class GameConsumer(AsyncWebsocketConsumer):
         'cancel_sequence':   ('cancel_sequence',   ('player_name',)),
         'reorder_hand':      ('reorder_hand',      ('player_name', 'old_index', 'new_index')),
         'claim_game':        ('claim_game',        ('player_name',)),
+        'gesture':           ('gesture',           ('player_name', 'gesture')),  # F1
     }
 
     # --- connection lifecycle ----------------------------------------------
@@ -291,6 +293,19 @@ class GameConsumer(AsyncWebsocketConsumer):
                 'message': f"{player_name} has won the game!",
             })
 
+    # F1: cosmetic gesture/emote. Validated against the shared allowlist and
+    # broadcast to everyone (including the sender) as a GESTURE action. It does
+    # NOT touch game state, so it skips the usual state-refresh that follows a
+    # real move (an emote shouldn't force every client to re-fetch their hand).
+    async def gesture(self, player_name, gesture):
+        if not emotes.is_valid_gesture(gesture):
+            return
+        await self._broadcast_action_only({
+            'type': 'GESTURE',
+            'player_name': player_name,
+            'gesture': gesture,
+        })
+
     # --- AI driver ----------------------------------------------------------
     async def handle_ai_turns(self):
         try:
@@ -479,6 +494,14 @@ class GameConsumer(AsyncWebsocketConsumer):
         await self.channel_layer.group_send(
             self.room_group_name,
             {'type': 'game_message', 'message': json.dumps({'type': 'refresh_state'})},
+        )
+
+    # F1: broadcast an action to every client WITHOUT a following state refresh.
+    # For cosmetic-only actions (gestures) that don't change game state.
+    async def _broadcast_action_only(self, action):
+        await self.channel_layer.group_send(
+            self.room_group_name,
+            {'type': 'game_message', 'message': json.dumps({'type': 'ai_action', 'action': action})},
         )
 
     def _get_or_claim_player(self, player_name):

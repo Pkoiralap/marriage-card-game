@@ -827,3 +827,88 @@ input[type="range"]::-moz-range-thumb {
         transition-duration: 0.01ms !important;
     }
 }
+
+/* F1: in-game emote menu. Styled with the F4 design tokens (--surface,
+   --accent, --radius, --shadow, --text) with fallbacks to the baseline tokens
+   so it looks right both before and after the F4 theme merge. */
+#emote-controls {
+    position: absolute;
+    bottom: 30px;
+    right: 20px;
+    z-index: 200;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+}
+
+#emote-toggle {
+    width: 52px;
+    min-width: 52px;
+    height: 52px;
+    padding: 0;
+    margin: 0;
+    font-size: 1.5rem;
+    line-height: 1;
+    border-radius: 50%;
+    box-shadow: var(--shadow);
+}
+
+#emote-menu {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 8px;
+    padding: 12px;
+    background: var(--surface, rgba(0, 0, 0, 0.7));
+    color: var(--text, var(--text-color));
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    backdrop-filter: blur(6px);
+    /* Hidden until the toggle adds .emote-open on #emote-controls. */
+    opacity: 0;
+    transform: translateY(10px) scale(0.95);
+    pointer-events: none;
+    transition: opacity 0.18s ease, transform 0.18s ease;
+}
+
+#emote-controls.emote-open #emote-menu {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+    pointer-events: auto;
+}
+
+.emote-btn {
+    width: 44px;
+    height: 44px;
+    font-size: 1.4rem;
+    line-height: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    background: var(--surface-2, rgba(255, 255, 255, 0.06));
+    color: var(--text, var(--text-color));
+    border: 1px solid transparent;
+    border-radius: var(--radius);
+    transition: background 0.15s ease, transform 0.1s ease, border-color 0.15s ease;
+}
+
+.emote-btn:hover {
+    background: var(--accent, var(--primary-color));
+    border-color: var(--accent-2, var(--primary-hover));
+    transform: translateY(-2px);
+}
+
+.emote-btn:active {
+    transform: translateY(0) scale(0.92);
+}
+
+/* Match the game-controls mobile lift so the emote toggle clears the phone
+   browser's bottom toolbar. */
+@media (max-width: 820px), (pointer: coarse) {
+    #emote-controls {
+        bottom: calc(env(safe-area-inset-bottom, 0px) + 90px);
+        right: 12px;
+    }
+}

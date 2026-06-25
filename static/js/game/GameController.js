@@ -53,6 +53,11 @@ export class GameController {
                 } else {
                     this.notify("You must have only 1 card remaining to claim the game", 'warn');
                 }
+            },
+            // F1: send a cosmetic gesture/emote. The server broadcasts it back as
+            // a GESTURE action which handleAction maps to the right avatar slot.
+            onGesture: (gesture) => {
+                if (this.socket) this.socket.sendGesture(gesture);
             }
         });
         this.renderer = null;
@@ -263,8 +268,19 @@ export class GameController {
         // Log the action
         this.logAction(action);
 
+        // F1: cosmetic gesture/emote. Maps the sender to their opponent avatar
+        // slot and plays the gesture there. Self has no avatar, so a gesture from
+        // me is just acknowledged (no avatar to animate). Returns early — a
+        // gesture never animates cards or advances the board.
+        if (action.type === 'GESTURE') {
+            const slot = this.getAvatarSlotForPlayer(action.player_name);
+            if (slot !== -1) this.renderer.triggerGesture(slot, action.gesture);
+            this.processQueues();
+            return;
+        }
+
         const isMe = (action.player_name === this.game.me.name);
-        
+
         // If it's my own action and I've already handled it locally, just skip animation
         if (isMe && (this.wasManualPick || this.wasManualDiscard)) {
             this.processQueues();
@@ -498,6 +514,19 @@ export class GameController {
             seeds.push(seed);
         }
         return seeds;
+    }
+
+    // F1: inverse of getOpponentAvatarSeeds' seat->slot mapping. Given a player
+    // name, return the renderer avatar slot showing that opponent, or -1 if it's
+    // me (no avatar) or the player isn't found. Slot i is seeded from seat
+    // (me-1-i) mod N, so seat s -> slot (me-1-s) mod N (valid only for s != me).
+    getAvatarSlotForPlayer(playerName) {
+        const N = this.game.players.length;
+        if (N <= 1) return -1;
+        const me = this.game.getMyIndex();
+        const seat = this.game.players.findIndex(p => p.name === playerName);
+        if (seat === -1 || seat === me || me === -1) return -1;
+        return (((me - 1 - seat) % N) + N) % N;
     }
 
     applyState(state) {
