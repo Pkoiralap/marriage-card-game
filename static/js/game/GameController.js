@@ -5,7 +5,6 @@ import { SocketManager } from '../network/SocketManager.js';
 import { UIManager } from '../ui/UIManager.js';
 
 import { DECK_POS, CHOICE_POS, HAND_CENTER_POS } from '../utils/Constants.js';
-import { hud } from '../utils/Hud.js';
 
 // F2: client mirror of game/emotes.py CHAT_PHRASES (id + display text). The
 // server is the source of truth and re-validates ids; this only drives the
@@ -27,7 +26,6 @@ const CHAT_PHRASES = [
 
 export class GameController {
     constructor() {
-        if (window.location.search.includes('hud')) hud.enable();
         this.game = new Game();
         this.showMode = 'SEQUENCE'; // 'SEQUENCE', 'TUNNELA', 'DUBLEE'
         this.ui = new UIManager({
@@ -170,7 +168,6 @@ export class GameController {
     }
 
     async processQueues() {
-        hud.set('queue', `anim=${this.isAnimating} events=${this.eventQueue.length}`);
         if (this.isAnimating) return;
         if (this.eventQueue.length === 0) return;
 
@@ -188,7 +185,6 @@ export class GameController {
             // leaves isAnimating stuck and the table half-rendered). Recover and
             // keep draining; the failing item was already shifted off the queue.
             console.error('processQueues error:', e);
-            hud.set('err', (e && e.message) ? e.message : String(e));
             this.isAnimating = false;
             if (this.eventQueue.length) this.processQueues();
         }
@@ -652,18 +648,6 @@ export class GameController {
         this.syncRegisteredIndices();
         this.updateShownSequencesUI();
         this.ui.updateTurnIndicator(this.game);
-
-        // --- Diagnostics LAST (wrapped so a HUD error can't break rendering). ---
-        try {
-            const seqBtn = document.getElementById('show-sequence-btn');
-            this._rx = (this._rx || 0) + 1;
-            hud.set('rx', `${this._rx} states applied`);
-            hud.set('me', `"${this.game.me ? this.game.me.name : '?'}" idx=${this.game.getMyIndex()}`);
-            hud.set('names', JSON.stringify(this.game.players.map(p => p.name)));
-            hud.set('turn', `active=${this.game.turnPlayerIndex} myTurn=${this.game.isMyTurn()}`);
-            hud.set('state', `phase=${this.game.phase} step=${state.turn_step} tc=${state.turn_count} showAllowed=${state.show_sequence_allowed}`);
-            hud.set('seqBtn', seqBtn ? `display=${seqBtn.style.display || '(css)'}` : 'NO ELEMENT');
-        } catch (e) { /* diagnostics are best-effort */ }
     }
 
     animate() {

@@ -5,3 +5,6 @@ channels_redis>=4.0.0
 # Pin redis-py: 8.x breaks channels_redis 4.x (blocking reads raise
 # "Timeout reading from redis" ~5s after connect, dropping every websocket).
 redis>=5,<6
+# S4: serve hashed/compressed static files (prod) and no-cache (dev) without a
+# separate web server; works under runserver and with collectstatic.
+whitenoise>=6.0,<7

@@ -2,6 +2,7 @@ import json
 import asyncio
 import logging
 import random
+import time  # S4: monotonic clock for WS rate-limiting
 from dataclasses import dataclass
 
 from channels.generic.websocket import AsyncWebsocketConsumer
@@ -37,6 +38,14 @@ class GameConsumer(AsyncWebsocketConsumer):
     # Track running AI tasks per room to prevent spam.
     ai_tasks = {}
 
+    # S4: lightweight, defensive per-connection WebSocket safeguards. Additive
+    # and tuned well above normal play (a fast human taps a few msgs/sec), so
+    # legitimate traffic is never dropped — this only sheds floods / oversized
+    # frames from a misbehaving or malicious client.
+    MAX_MESSAGE_BYTES = 16 * 1024       # 16 KiB; real messages are well under 1 KiB
+    RATE_LIMIT_MAX = 40                 # max messages...
+    RATE_LIMIT_WINDOW = 5.0             # ...per this many seconds, per connection
+
     # type -> (handler method name, message fields to pass positionally)
     DISPATCH = {
         'get_game_state':    ('send_game_state',   ('player_name',)),
@@ -58,8 +67,27 @@ class GameConsumer(AsyncWebsocketConsumer):
         self.room_name = self.scope['url_route']['kwargs']['room_name']
         self.room_group_name = 'game_%s' % self.room_name
         self.player_name = None  # set once we learn who this socket is
+        # S4: rate-limit state (sliding window of recent message timestamps).
+        self._msg_times = []
         await self.channel_layer.group_add(self.room_group_name, self.channel_name)
         await self.accept()
+
+    def _rate_limited(self):
+        """S4: True if this connection has exceeded its message budget.
+
+        Drops the oldest timestamps outside the window, then records & checks
+        the current one. Defensive only — never trips under normal play.
+        """
+        now = time.monotonic()
+        cutoff = now - self.RATE_LIMIT_WINDOW
+        times = getattr(self, "_msg_times", None)
+        if times is None:
+            times = self._msg_times = []
+        self._msg_times = times = [t for t in times if t >= cutoff]
+        if len(times) >= self.RATE_LIMIT_MAX:
+            return True
+        times.append(now)
+        return False
 
     async def disconnect(self, close_code):
         # Release this socket's seat so it shows as open again in the lobby.
@@ -76,6 +104,18 @@ class GameConsumer(AsyncWebsocketConsumer):
             logger.exception("Failed to set joined=%s for %s", joined, player_name)
 
     async def receive(self, text_data):
+        # S4: defensive guards — drop oversized frames and message floods before
+        # doing any work. Both are no-ops for normal play (small, infrequent msgs).
+        if text_data is None:
+            return
+        if len(text_data) > self.MAX_MESSAGE_BYTES:
+            logger.warning("Dropping oversized message (%d bytes) in room %s",
+                           len(text_data), getattr(self, 'room_name', '?'))
+            return
+        if self._rate_limited():
+            logger.warning("Rate-limiting connection in room %s",
+                           getattr(self, 'room_name', '?'))
+            return
         try:
             message = json.loads(json.loads(text_data).get('message', '{}'))
             entry = self.DISPATCH.get(message.get('type'))
