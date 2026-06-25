@@ -335,3 +335,43 @@ relays messages between agents when an entry below requests it.
 
 ## Batch-2 Log
 - (orchestrator) Batch 2 launched from master `6bf4436`.
+- (S2 Maal/joker rules) `feat/maal`. Modeled the maal (tiplu) + relatives as
+  jokers as a single source of truth in the rules engine, wired into the
+  show-validator and the AI so humans and AI agree on jokers (fixes the F3-noted
+  "register_sequence and AI disagree on jokers").
+  - **New module `game/rules/jokers.py`** (pure, framework-free). Public API
+    (also re-exported from `game.rules`):
+    - `maal_joker_faces(maal_card) -> set[(suit, rank)]` — the wild faces.
+    - `maal_joker_ids(hand, maal_card) -> set[int]` — maps a hand's card
+      ids/dicts to the joker-id set the meld validators expect.
+    Accepts a `Card`, a wire/DB dict (`{'suit','number',...}`), or falsy
+    (-> empty set = pure-only before maal).
+  - **Derivation rule (variant: maal + relatives).** Given the maal (tiplu),
+    four faces are wild: **tiplu** (maal face), **poplu** (tiplu rank +1, same
+    suit, wraps K->A), **jhiplu** (tiplu rank -1, same suit, wraps A->K), and
+    **alternate tiplu** (same rank, the other suit of the *same colour*:
+    HEART<->DIAMOND, SPADE<->CLUB). No printed jokers in this deck; the hook to
+    add them lives in `maal_joker_faces`. **Other features should call
+    `rules.maal_joker_ids(hand, maal_card)`** (or `logic.jokers_from_maal`, which
+    now just delegates) — do NOT re-derive jokers by hand.
+  - **`game/logic.py`**: `jokers_from_maal` now delegates to
+    `rules.maal_joker_ids` (no behaviour change for the AI except relatives are
+    now wild). All AI win/claim/show paths already route through it, so they pick
+    up relatives automatically.
+  - **`game/consumers.py` (`# S2`, additive, 1 line + comment)**:
+    `register_sequence` now validates with
+    `is_sequence(card_objs, jokers_from_maal(hand, game.maal_card))` — accepts
+    dirty (joker-filled) sequences once the maal is revealed; before the maal is
+    set the joker set is empty so it stays pure-only as today.
+  - **Tests**: 99 -> 114 green. `game/rules/tests.py` (pure: tiplu/poplu/
+    jhiplu/alt identification, K/A wrap, id mapping, dirty-sequence acceptance,
+    winning-hand parity). `game/tests.py` (`jokers_from_maal` relatives;
+    `RegisterSequenceMaalTests` — dirty rejected before maal / accepted after /
+    pure still accepted). No JS, no migrations, no model fields.
+  - **Merge risks**: `consumers.py register_sequence` — one-line change (added a
+    `jokers` arg to `is_sequence`); trivial unless S1/S3 also edit that method.
+    `logic.py jokers_from_maal` body replaced (delegates now) — conflicts only if
+    F3/AI work re-touches that function. `rules/melds.py` UNCHANGED (joker logic
+    lives in the new `jokers.py`). `rules/tests.py` and `game/tests.py` appended.
+    `RegisterSequenceMaalTests` is a `TransactionTestCase` (sync_to_async +
+    sqlite would deadlock under plain TestCase).

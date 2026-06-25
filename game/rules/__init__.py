@@ -32,6 +32,8 @@ from .scoring import (
     hand_points,
     unmelded_points,
 )
+# S2: maal/tiplu joker derivation (single source of truth).
+from .jokers import maal_joker_faces, maal_joker_ids
 
 __all__ = [
     # cards
@@ -42,4 +44,6 @@ __all__ = [
     "MIN_SEQUENCE", "TUNNELA_SIZE", "DUBLEE_SIZE",
     # scoring
     "card_points", "hand_points", "unmelded_points", "DEFAULT_POINT_VALUES",
+    # jokers (S2)
+    "maal_joker_faces", "maal_joker_ids",
 ]
