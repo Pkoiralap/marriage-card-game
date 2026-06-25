@@ -119,6 +119,34 @@ def is_winning(hand, jokers=None):
     return is_winning_hand(hand, jokers or set())
 
 
+def claim_discard_index(hand, jokers=None):
+    """Index to discard so the *remaining* cards form a winning hand, else None.
+
+    During its turn the AI holds one extra card (it picked before discarding),
+    so the hand is one card larger than a finished 21-card hand. A win is only
+    valid *after* the discard: there must be some single card whose removal
+    leaves every remaining card melded (with at least one pure sequence). This
+    returns that card's index (preferring to keep the lowest-penalty leftovers),
+    or ``None`` when no discard yields a win. Pure: depends only on its inputs.
+
+    Note: ``is_winning`` alone never fires on a mid-turn hand because the extra
+    card makes the count indivisible by the meld size — this is the bridge.
+    """
+    if not hand:
+        return None
+    jokers = jokers or set()
+    best_idx = None
+    for i in range(len(hand)):
+        remaining = hand[:i] + hand[i + 1:]
+        if is_winning_hand(remaining, jokers):
+            # Prefer discarding the highest-penalty card among winning options so
+            # the (irrelevant) discarded card is the least valuable one.
+            if best_idx is None or unmelded_points([hand[i]], jokers) > \
+                    unmelded_points([hand[best_idx]], jokers):
+                best_idx = i
+    return best_idx
+
+
 def find_showable_sequences(hand, jokers=None, limit=3):
     """Up to ``limit`` disjoint groups of card indices that form sequences.
 
@@ -313,6 +341,15 @@ class AIPlayer(BasePlayer):
     def handle_discard(self, **kwargs):
         if not self.player_model.hand:
             return False, None
+
+        # F3: honour an explicit card_index when the driver asks for a specific
+        # discard (e.g. the claim path discards the exact card that completes the
+        # win). Falls through to the heuristic when none/invalid is supplied.
+        forced = kwargs.get('card_index')
+        if forced is not None and 0 <= forced < len(self.player_model.hand):
+            card = self.player_model.hand.pop(forced)
+            self.game_model.visibles.append(card)
+            return True, card
 
         if self.difficulty == 'easy':
             idx = random.randint(0, len(self.player_model.hand) - 1)

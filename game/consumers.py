@@ -16,6 +16,7 @@ from .logic import (
     find_showable_sequences,
     find_showable_tunnelas,
     is_winning,
+    claim_discard_index,
 )
 from .rules import Card, is_sequence, is_tunnela, is_dublee
 
@@ -314,19 +315,42 @@ class GameConsumer(AsyncWebsocketConsumer):
                 # back to deck when the choice pile is useless/empty.
                 if await self._perform_pick(ctx.game, ctx.player, ctx.index, None, 'ai_pick'):
                     await asyncio.sleep(1.5)  # let the pick animation play
+                else:
+                    # F3: loop-safety. A pick can only fail when the deck AND the
+                    # choice pile are both empty. In that case the AI cannot take
+                    # its turn, turn_step stays on PICK, and discard would fail
+                    # too — re-looping on the same seat forever. Stop the driver
+                    # instead of stalling; the game is wedged on an empty deck and
+                    # only a (human) reset can move it on.
+                    logger.warning("AI %s could not pick (deck+choice empty) in "
+                                   "room %s; stopping AI loop.", ctx.player.name, self.room_name)
+                    break
 
                 # F3: between pick and discard, try to show any melds the AI now
                 # holds, pick the maal when prompted, and claim if it has won.
+                # When it claims it also performs its own (winning) discard and
+                # returns True, so we stop here rather than discarding twice.
                 player = await sync_to_async(Player.objects.get)(id=ctx.player.id)
-                await self._ai_show_and_claim(ctx.game, player, ctx.index)
+                claimed = await self._ai_show_and_claim(ctx.game, player, ctx.index)
+                if claimed:
+                    break
 
                 # 2. AI discards (re-fetch: pick/show may have changed the hand).
                 player = await sync_to_async(Player.objects.get)(id=ctx.player.id)
-                # F3: if the AI already won during the show step the game is over.
-                if not ctx.game.is_active or not player.game.is_active:
+                # F3: defensive — if the game ended for any other reason, stop.
+                game_now = await sync_to_async(Game.objects.get)(code=self.room_name)
+                if not game_now.is_active:
                     break
                 if await self._perform_discard(ctx.game, player, ctx.index, 'ai_discard'):
                     await asyncio.sleep(1.5)  # let the discard animation play
+                else:
+                    # F3: loop-safety. A successful pick leaves turn_step=DISCARD
+                    # with a non-empty hand, so discard should always succeed.
+                    # If it somehow doesn't, the turn never advances — break
+                    # rather than spin on the same seat forever.
+                    logger.warning("AI %s discard failed in room %s; stopping AI "
+                                   "loop to avoid a stall.", player.name, self.room_name)
+                    break
         except Exception:
             logger.exception("AI loop crashed in room %s", self.room_name)
 
@@ -368,12 +392,14 @@ class GameConsumer(AsyncWebsocketConsumer):
             await self._ai_select_maal(game, player)
             await asyncio.sleep(0.6)
 
-        # Claim if the remaining hand is a winning hand.
+        # Claim if discarding one card leaves a winning hand. NOTE: at this point
+        # the AI is holding its post-pick hand (one card more than a finished
+        # 21-card hand), so a bare is_winning() never fires — we must check
+        # whether *some* discard completes the win. Returns True when claimed so
+        # the driver skips the normal discard step.
         player = await sync_to_async(Player.objects.get)(id=player.id)
         game = await sync_to_async(Game.objects.get)(code=self.room_name)
-        jokers = jokers_from_maal(player.hand, game.maal_card)
-        if is_winning(player.hand, jokers):
-            await self._ai_claim(game, player)
+        claimed = await self._ai_claim(game, player)
 
         # F3 hook (F1 gestures / F2 chat): once those branches land, this is the
         # natural place for the AI to emote — e.g. emit a 'celebrate' gesture on
@@ -382,6 +408,7 @@ class GameConsumer(AsyncWebsocketConsumer):
         # Example (guarded so it's safe before F1/F2 exist):
         #   if hasattr(self, 'send_gesture'):
         #       await self.send_gesture(player.name, 'celebrate')
+        return claimed
 
     async def _ai_select_maal(self, game, player):
         """Pick the maal that maximises the AI's own wild cards.
@@ -400,18 +427,35 @@ class GameConsumer(AsyncWebsocketConsumer):
         await self.select_maal(player.name, best['id'])
 
     async def _ai_claim(self, game, player):
-        # Reuse the human claim path. claim_game currently accepts on the
-        # "1 card left" rule; the AI claims pre-discard when its remaining hand
-        # already melds, so guard with the rules engine here too.
+        """Claim the game iff some single discard leaves a winning hand.
+
+        The AI is mid-turn holding one extra card, so it must discard the
+        card whose removal completes the win, leaving the finished 21-card
+        hand on the table (mirroring the human "1 card left -> claim" rule).
+        Returns True when a claim was made (so the driver skips its own
+        discard), False otherwise.
+        """
         jokers = jokers_from_maal(player.hand, game.maal_card)
-        if is_winning(player.hand, jokers):
-            game.is_active = False
-            await sync_to_async(game.save)()
-            await self.broadcast_action({
-                'type': 'GAME_CLAIMED',
-                'player_name': player.name,
-                'message': f"{player.name} has won the game!",
-            })
+        discard_idx = claim_discard_index(player.hand, jokers)
+        if discard_idx is None:
+            return False
+
+        # Discard the winning card via the normal path so the board + the
+        # GameAction log stay consistent (turn also advances off this seat).
+        discarded = await self._perform_discard(
+            game, player, game.turn_player_index, 'ai_discard', card_index=discard_idx)
+        if discarded:
+            await asyncio.sleep(0.6)
+
+        game = await sync_to_async(Game.objects.get)(code=self.room_name)
+        game.is_active = False
+        await sync_to_async(game.save)()
+        await self.broadcast_action({
+            'type': 'GAME_CLAIMED',
+            'player_name': player.name,
+            'message': f"{player.name} has won the game!",
+        })
+        return True
 
     # --- broadcasting / state ----------------------------------------------
     async def send_reject(self, reject_type, reason):

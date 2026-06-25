@@ -94,3 +94,41 @@ relays messages between agents when an entry below requests it.
     `_ai_show_and_claim`/`_ai_select_maal`/`_ai_claim` methods. F1/F2 add DISPATCH
     entries + handler methods elsewhere in the class, so conflicts should be
     localized to the import area and the AI loop body.
+- (F3 QA) Reviewed `feat/ai` vs `master`, tested, fixed bugs. All `# F3`-scoped.
+  - **BUG 1 (High) — AI could never win.** The claim path checked
+    `is_winning(player.hand)` on the *post-pick* hand (22 cards; one extra not
+    yet discarded). 22 isn't a multiple of the meld size, so `find_meld_partition`
+    always returned None and the AI never claimed — the whole claim flow was dead.
+    Fix: new pure helper `claim_discard_index(hand, jokers)` (`logic.py`) finds the
+    card whose removal leaves a winning 21-card hand. `_ai_claim` now discards that
+    exact card via the normal path (board/GameAction stay consistent), then
+    broadcasts `GAME_CLAIMED`; `_ai_show_and_claim` returns whether it claimed and
+    the driver breaks on it (no double discard).
+  - **BUG 2 (High) — infinite stall on empty deck.** When deck+choice are both
+    empty, `handle_pick` fails and `turn_step` stays PICK; the driver then re-loops
+    on the same AI seat forever (game never ends, turn never returns to a human).
+    Fix: `handle_ai_turns` now `break`s when the pick fails, and defensively when a
+    post-pick discard fails. Added `# F3` loop-safety guards + warnings.
+  - **BUG 3 (Med) — claim discard ignored the requested card.** `AIPlayer.handle_discard`
+    ignored `card_index`, so the claim path couldn't discard the specific winning
+    card. Fix: honour an explicit in-range `card_index`, else fall back to the
+    heuristic. (Out-of-range/None falls through safely.)
+  - **Verified OK:** `getattr(player_model,'ai_difficulty',...)` defaults to
+    'normal' with no AttributeError (no field/migration); `choose_discard` never
+    returns out-of-range and never discards a joker; `should_pick_choice` handles
+    empty visibles/None; `_ai_select_maal` picks a valid deck card; `is_winning`
+    only true on genuine wins; `claim_discard_index` ~7ms worst case on a 22-card
+    hand; hard lookahead in-range and keeps jokers.
+  - **Non-blocking concerns (left for merge, not fixed — out of F3 scope):**
+    (a) `find_showable_sequences` only returns groups when the *whole* hand
+    partitions (`find_meld_partition` is all-or-nothing), so mid-game the AI
+    rarely shows sequences progressively — it mostly shows/claims at the end. Works
+    correctly, just weak strategy. (b) `register_sequence` validates with
+    `is_sequence(cards)` (no jokers), so a joker-filled sequence the AI finds would
+    be rejected by the shared human flow; harmless (bounded, no loop) but the two
+    paths disagree on jokers. (c) Discard-to-win via `process_turn` calls the base
+    no-op `claim_game()`; only the pre-discard `_ai_claim` actually ends the game
+    (which is the path the driver uses).
+  - **Tests:** +12 (73 -> 85, all green). `ClaimDiscardIndexTests`,
+    `AIForcedDiscardTests`, `AIDifficultyTests`, `AILoopProgressTests`
+    (incl. an all-AI multi-turn no-stall drive).

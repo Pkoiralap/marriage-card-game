@@ -17,6 +17,7 @@ from django.test import Client, TestCase
 from game.consumers import GameConsumer, TurnContext
 from game.logic import (
     choose_discard,
+    claim_discard_index,
     find_showable_sequences,
     find_showable_tunnelas,
     is_winning,
@@ -423,6 +424,216 @@ class JokersFromMaalTests(unittest.TestCase):
             _card("HEART", "7", 1), _card("HEART", "7", 2), _card("SPADE", "7", 3),
         ]
         self.assertEqual(jokers_from_maal(hand, maal), {1, 2})
+
+
+# F3 (QA): a finished, winning 21-card hand — two pure spade/heart runs plus
+# five tunnelas (3 identical cards each). 7 melds * 3 = 21 cards.
+def _winning_21():
+    groups = [
+        [("SPADE", "4"), ("SPADE", "5"), ("SPADE", "6")],     # pure sequence
+        [("HEART", "9"), ("HEART", "10"), ("HEART", "J")],    # pure sequence
+        [("CLUB", "2"), ("CLUB", "2"), ("CLUB", "2")],        # tunnela
+        [("DIAMOND", "K"), ("DIAMOND", "K"), ("DIAMOND", "K")],
+        [("SPADE", "8"), ("SPADE", "8"), ("SPADE", "8")],
+        [("HEART", "3"), ("HEART", "3"), ("HEART", "3")],
+        [("CLUB", "7"), ("CLUB", "7"), ("CLUB", "7")],
+    ]
+    out, cid = [], 0
+    for grp in groups:
+        for s, n in grp:
+            cid += 1
+            out.append(_card(s, n, cid))
+    return out
+
+
+class ClaimDiscardIndexTests(unittest.TestCase):
+    """F3 (QA): the AI claims only after discarding the right extra card.
+
+    A bare is_winning() never fires mid-turn (the AI holds one extra card, so
+    the count isn't a multiple of the meld size). claim_discard_index bridges
+    that: it finds the card to discard so the *remaining* 21 cards win.
+    """
+
+    def test_no_discard_wins_on_incomplete_hand(self):
+        # One clean meld plus two unconnected cards: no single discard can leave
+        # a fully-melded hand (a lone card can never form a meld).
+        hand = [
+            _card("SPADE", "4", 1), _card("SPADE", "5", 2), _card("SPADE", "6", 3),
+            _card("HEART", "K", 4), _card("CLUB", "2", 5),
+        ]
+        self.assertIsNone(claim_discard_index(hand))
+
+    def test_finds_the_discard_that_completes_the_win(self):
+        # 21 winning cards + one dead extra = the real post-pick hand.
+        hand = _winning_21() + [_card("DIAMOND", "2", 999)]
+        idx = claim_discard_index(hand)
+        self.assertIsNotNone(idx)
+        # Discarding the chosen card must leave a genuine winning hand.
+        remaining = hand[:idx] + hand[idx + 1:]
+        self.assertEqual(len(remaining), 21)
+        self.assertTrue(is_winning(remaining))
+        # And the natural choice is to dump the dead extra (id 999).
+        self.assertEqual(hand[idx]["id"], 999)
+
+    def test_bare_is_winning_does_not_fire_on_post_pick_hand(self):
+        # Regression: the original code claimed via is_winning(full hand), which
+        # is always False at 22 cards -> the AI could never win.
+        hand = _winning_21() + [_card("DIAMOND", "2", 999)]
+        self.assertFalse(is_winning(hand))
+        self.assertIsNotNone(claim_discard_index(hand))
+
+    def test_empty_hand(self):
+        self.assertIsNone(claim_discard_index([]))
+
+
+class AIForcedDiscardTests(TestCase):
+    """F3 (QA): the AI honours an explicit card_index (used by the claim path)."""
+
+    def _ai(self, hand):
+        game = Game.objects.create(
+            num_players=1, code=Game.generate_code(), deck=[], visibles=[],
+            turn_step='DISCARD')
+        player = Player.objects.create(
+            name="AI_1", game=game, player_type='AI', hand=hand)
+        from game.logic import AIPlayer
+        return AIPlayer(player)
+
+    def test_forced_index_is_discarded_exactly(self):
+        hand = [_card("SPADE", "4", 1), _card("SPADE", "5", 2), _card("HEART", "K", 3)]
+        ai = self._ai(list(hand))
+        ok, discarded = ai.handle_discard(card_index=0)
+        self.assertTrue(ok)
+        self.assertEqual(discarded["id"], 1)  # exactly the requested card
+
+    def test_invalid_forced_index_falls_back_to_heuristic(self):
+        hand = [_card("SPADE", "4", 1), _card("SPADE", "5", 2), _card("HEART", "K", 3)]
+        ai = self._ai(list(hand))
+        ok, discarded = ai.handle_discard(card_index=99)  # out of range
+        self.assertTrue(ok)
+        # Heuristic dumps the dead K of hearts, not a sequence card.
+        self.assertEqual(discarded["id"], 3)
+
+
+class AIDifficultyTests(TestCase):
+    """F3 (QA): difficulty knob is read via getattr with no model field."""
+
+    def _player(self):
+        game = Game.objects.create(
+            num_players=1, code=Game.generate_code(), deck=[], visibles=[])
+        return Player.objects.create(
+            name="AI_1", game=game, player_type='AI', hand=[])
+
+    def test_defaults_to_normal_without_field(self):
+        from game.logic import AIPlayer
+        player = self._player()
+        self.assertFalse(hasattr(player, 'ai_difficulty'))  # no migration added
+        self.assertEqual(AIPlayer(player).difficulty, 'normal')  # no AttributeError
+
+    def test_explicit_difficulty_argument(self):
+        from game.logic import AIPlayer
+        self.assertEqual(AIPlayer(self._player(), difficulty='easy').difficulty, 'easy')
+
+    def test_hard_discard_lookahead_in_range_and_keeps_jokers(self):
+        from game.logic import AIPlayer
+        maal = _card("HEART", "7", 99)
+        hand = [
+            _card("HEART", "7", 10),                       # joker
+            _card("SPADE", "4", 1), _card("SPADE", "5", 2),
+            _card("HEART", "K", 3), _card("CLUB", "2", 4),
+        ]
+        game = Game.objects.create(
+            num_players=1, code=Game.generate_code(), deck=[], visibles=[],
+            turn_step='DISCARD', maal_card=maal)
+        player = Player.objects.create(
+            name="AI_1", game=game, player_type='AI', hand=list(hand))
+        ai = AIPlayer(player, difficulty='hard')
+        ok, discarded = ai.handle_discard()
+        self.assertTrue(ok)
+        self.assertNotEqual(discarded["id"], 10)  # never throw the joker
+
+
+class AILoopProgressTests(TestCase):
+    """F3 (QA): forward-progress invariants the AI driver relies on.
+
+    The async driver (handle_ai_turns) needs Redis/channels, but its loop
+    safety reduces to a model-layer contract: process_turn() advances the turn
+    iff a step succeeds, and a pick can only fail when deck+choice are empty.
+    These exercise that contract directly (the driver now BREAKS on a failed
+    pick/discard so it can never spin on the same seat).
+    """
+
+    def _game(self, **kw):
+        defaults = dict(num_players=2, code=Game.generate_code(), turn_step='PICK',
+                        turn_player_index=0, deck=[], visibles=[])
+        defaults.update(kw)
+        return Game.objects.create(**defaults)
+
+    def test_pick_fails_and_turn_does_not_advance_when_deck_and_choice_empty(self):
+        from game.logic import AIPlayer
+        game = self._game(deck=[], visibles=[])
+        player = Player.objects.create(
+            name="AI_1", game=game, player_type='AI',
+            hand=[_card("SPADE", "4", 1), _card("HEART", "K", 2)])
+        ai = AIPlayer(player)
+        ok, _, _ = ai.process_turn()
+        self.assertFalse(ok)                     # pick failed -> driver breaks
+        self.assertEqual(ai.game_model.turn_step, 'PICK')
+        self.assertEqual(ai.game_model.turn_player_index, 0)  # no advance
+
+    def test_full_ai_turn_advances_to_next_seat(self):
+        from game.logic import AIPlayer
+        game = self._game(deck=[_card("CLUB", "3", 9)], visibles=[])
+        player = Player.objects.create(
+            name="AI_1", game=game, player_type='AI',
+            hand=[_card("SPADE", "4", 1), _card("HEART", "K", 2)])
+        ai = AIPlayer(player)
+        ok, _, _ = ai.process_turn()             # PICK -> draws deck
+        self.assertTrue(ok)
+        player.refresh_from_db(); game.refresh_from_db()
+        ai2 = AIPlayer(player)
+        ok2, _, _ = ai2.process_turn()           # DISCARD -> advances seat
+        self.assertTrue(ok2)
+        self.assertEqual(ai2.game_model.turn_step, 'PICK')
+        self.assertEqual(ai2.game_model.turn_player_index, 1)  # -1 % 2 == 1
+
+    def test_all_ai_game_runs_many_turns_without_stalling(self):
+        """Drive a 2-AI game through the model layer for many turns; it must
+        keep advancing seats (no infinite re-loop on one seat) until a win or
+        the deck runs dry."""
+        from game.logic import AIPlayer
+        deck = [_card("CLUB", str(((i % 9) + 2)), 1000 + i) for i in range(60)]
+        game = self._game(num_players=2, deck=list(deck), visibles=[])
+        p0 = Player.objects.create(
+            name="AI_1", game=game, player_type='AI',
+            hand=[_card("SPADE", "4", 1), _card("SPADE", "5", 2)])
+        p1 = Player.objects.create(
+            name="AI_2", game=game, player_type='AI',
+            hand=[_card("HEART", "9", 3), _card("HEART", "10", 4)])
+        players = [p0, p1]
+
+        seats_seen = []
+        for _ in range(200):  # generous cap; must terminate well before this
+            game.refresh_from_db()
+            if not game.deck:
+                break
+            idx = game.turn_player_index % 2
+            seats_seen.append(idx)
+            pm = players[idx]; pm.refresh_from_db()
+            ai = AIPlayer(pm)
+            picked, _, _ = ai.process_turn()       # PICK
+            self.assertTrue(picked, "pick should succeed while deck non-empty")
+            pm.refresh_from_db(); game.refresh_from_db()
+            ai = AIPlayer(pm)
+            discarded, _ = ai.handle_discard()
+            self.assertTrue(discarded)
+            # mirror process_turn's DISCARD bookkeeping (advance the seat)
+            game.turn_step = 'PICK'
+            game.turn_player_index = (game.turn_player_index - 1) % 2
+            game.save()
+
+        # The loop alternated seats and consumed the deck -> it progressed.
+        self.assertIn(0, seats_seen)
+        self.assertIn(1, seats_seen)
 
 
 if __name__ == "__main__":
