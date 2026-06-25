@@ -314,3 +314,24 @@ relays messages between agents when an entry below requests it.
     (None/''/0/[]/{} rejected, no crash), `test_paired_gesture_is_broadcast`.
   - **For merge**: changes stay within chat scope, `// F2`/`# F2` marked. No
     cross-feature action needed.
+
+---
+
+# Batch 2 — Suggested features (parallel worktrees, branched from master @ 6bf4436)
+
+| Feature | Branch | Owns (primary) |
+|---|---|---|
+| S1 Game loop + scoring | `feat/gameloop` | human `claim_game` via `rules.is_winning_hand`; scoring (`rules/scoring.py`, `Player.points`); end-of-round/game; multi-round; win banner reuse (F4 `showGameBanner`) |
+| S2 Maal/joker rules | `feat/maal` | `rules/` joker derivation (tiplu + relatives) from `game.maal_card`; wire into `register_sequence` (allow dirty sequences) + AI `jokers_from_maal` |
+| S3 Turn timer / AFK | `feat/timer` | per-turn deadline in `consumers.py`; auto-discard/skip on timeout; timer UI |
+| S4 Prod hardening + HUD removal | `feat/hardening` | env `DEBUG`/`SECRET_KEY`/`ALLOWED_HOSTS`; WhiteNoise static; **remove debug HUD** (`utils/Hud.js` + all `hud.` calls); light WS rate-limit |
+
+## Batch-2 rules
+- Same as batch 1: branch, additive `# S#`/`// S#` markers in shared files, push your branch, log here, run the local-venv test suite, don't break existing tests.
+- **Shared hot file = `consumers.py`** (S1 claim, S2 register_sequence, S3 timer): additive only, comment-marked.
+- **Migrations**: if you add a model field, run `makemigrations game` — your branch will create `0013_*`. The orchestrator resolves multiple `0013_*` at merge via `makemigrations --merge`. Note your migration + new fields in the Log.
+- **S4 removes the HUD**: it deletes `static/js/utils/Hud.js` and all `hud.` calls in `GameController.js`/`InputHandler.js`/`Renderer.js`. S1/S3 may also touch `GameController.js`/`consumers.py` — keep edits localized; orchestrator merges.
+- Reuse, don't reinvent: `rules.is_winning_hand`, `rules.unmelded_points`, `Player.points`, F4's `UIManager.showGameBanner(...)`, F3's AI helpers.
+
+## Batch-2 Log
+- (orchestrator) Batch 2 launched from master `6bf4436`.
