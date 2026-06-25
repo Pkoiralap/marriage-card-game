@@ -107,3 +107,38 @@ relays messages between agents when an entry below requests it.
   easy since F1 (`emote-`) / F2 (`chat-`) use prefixed ids/classes that don't
   collide with anything here; take F4's `style.css`/`<head>`/token block and
   re-apply F1/F2's prefixed additions on top.
+
+- (QA UI) Reviewed `feat/ui` @ `2edb412` (`git diff master...HEAD`). **PASS — no
+  bugs found; no code changes needed.** Verified:
+  - **DOM id/selector coverage (top risk):** grepped every `getElementById`
+    (36 unique ids) and `querySelector(All)` (4 selectors: `.seat-row`,
+    `.seat-name`, `.seat-type`, `.card-slider-item`) across `static/js/**`.
+    Every referenced id exists in `templates/index.html`; the 4 selectors target
+    elements UIManager creates at runtime (seat config / maal slider) and all
+    have matching CSS. No id was renamed or removed. `#toast-container` exists in
+    HTML and Toast.js also auto-creates it if missing.
+  - **Toast:** `window.toast` installed at module-eval via `main.js` import
+    (before `DOMContentLoaded`), so it's defined before any caller. All three
+    remaining `alert(` calls (UIManager `notify` helper, GameController `notify`,
+    SocketManager onclose) are feature-detect fallbacks — graceful if Toast fails
+    to load. Every former `alert` path still informs the user.
+  - **Turn indicator / banner:** `updateTurnIndicator(game)` guards null/empty
+    `players`, missing `me`, missing `hand`/`points`; uses real Game props
+    (`isMyTurn`, `phase`, `turnPlayerIndex`, `turnStep`). `active.name` resolves
+    (server `players_data` includes `name`). `showGameBanner` no-ops safely if
+    `#game-banner` absent and GAME_CLAIMED falls back to toast+reload. Banner
+    "Play again" → `location.reload()` preserves original GAME_CLAIMED behavior.
+  - **Layout/z-index:** modals (1000) < banner (1500) < toasts (4000); HUD pills
+    (100–200) below. `#turn-indicator` and `#game-log` use `pointer-events:none`
+    so they don't block the canvas/cards. Mobile media query raises controls
+    above the browser toolbar (`+90px`) and shrinks log/sequences. safe-area
+    insets applied throughout without pushing controls off-screen.
+  - **Tokens:** all contract tokens present on `:root` (`--surface/-2/-3`,
+    `--accent/-2`, `--text/-dim`, `--radius`, `--shadow`) + legacy aliases +
+    extras. All 5 `@keyframes` referenced are defined.
+  - **Tests:** backend `manage.py test game` → **53 passed** (UI untouched
+    backend). `node --check` passes on all changed JS and all `static/js/**`.
+  - **Merge notes:** unchanged from F4 — F1/F2 take F4's `style.css`/`<head>`/
+    tokens wholesale and re-apply their prefixed (`emote-`/`chat-`) additions;
+    F1/F2 should style new UI with the `:root` tokens and feature-detect
+    `window.toast`.
