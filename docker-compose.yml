@@ -12,6 +12,7 @@ services:
       - redis
     environment:
       - DEBUG=1
+      - REDIS_URL=redis://redis:6379/0
 
   redis:
     image: redis:7

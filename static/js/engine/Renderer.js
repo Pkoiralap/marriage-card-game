@@ -1,5 +1,6 @@
 import { TABLE_RADIUS, OPPONENT_TABLE_RADIUS, CARD_WIDTH, CARD_HEIGHT, CARD_THICKNESS, DECK_POS, CHOICE_POS, DISCARD_ZONE_RADIUS } from '../utils/Constants.js';
 import { createCardBackTexture, createCardTexture } from '../utils/Helpers.js';
+import { Avatar } from './Avatar.js';
 
 export class Renderer {
     constructor(container) {
@@ -9,6 +10,7 @@ export class Renderer {
         
         this.activeAnimations = [];
         this.markers = [];
+        this.avatars = [];   // procedural opponent avatars (idle-animated each frame)
         
         this.cardsGroup = new THREE.Group();
         this.opponentsGroup = new THREE.Group();
@@ -152,6 +154,10 @@ export class Renderer {
                 if (anim.onComplete) anim.onComplete();
             }
         }
+
+        // Idle-animate the avatars every frame.
+        const tsec = now / 1000;
+        for (let i = 0; i < this.avatars.length; i++) this.avatars[i].update(tsec);
 
         this.threeRenderer.render(this.scene, this.camera);
     }
@@ -379,35 +385,85 @@ export class Renderer {
         }
     }
 
-    addOpponents() {
-        if (this.opponentsGroup.children.length > 0) return;
-        
-        const numOpponents = 3; 
-        const tableRadius = OPPONENT_TABLE_RADIUS; 
+    // avatarSeeds: array (one entry per opponent, in render-slot order) of the
+    // avatar preset index for that player. Rebuilt only when the set changes,
+    // so per-turn state updates don't reset the idle animation.
+    addOpponents(avatarSeeds = []) {
+        const numOpponents = avatarSeeds.length;
+        if (numOpponents < 1) return;
+
+        const sig = avatarSeeds.join(',');
+        if (this.opponentsGroup.userData.sig === sig) return;
+        this.opponentsGroup.userData.sig = sig;
+
+        // Tear down the previous set (dispose avatar geometries/materials).
+        this.avatars.forEach(a => a.dispose());
+        this.avatars = [];
+        for (let i = this.opponentsGroup.children.length - 1; i >= 0; i--) {
+            this.opponentsGroup.remove(this.opponentsGroup.children[i]);
+        }
+
+        const backTexture = createCardBackTexture(this.threeRenderer);
         for (let i = 0; i < numOpponents; i++) {
             const pos = this.getOpponentPosition(i, numOpponents);
-            const oppGeo = new THREE.SphereGeometry(2, 32, 32);
-            const oppMat = new THREE.MeshStandardMaterial({ color: 0xe74c3c });
-            const opponent = new THREE.Mesh(oppGeo, oppMat);
-            opponent.position.copy(pos);
-            opponent.position.y = 2;
-            opponent.castShadow = true;
-            this.opponentsGroup.add(opponent);
-            
-            const handSize = 8;
-            for (let j = 0; j < handSize; j++) {
-                const cGeo = new THREE.BoxGeometry(1.5, 2.1, 0.05);
-                const cMat = new THREE.MeshStandardMaterial({ map: createCardBackTexture(this.threeRenderer) });
-                const cMesh = new THREE.Mesh(cGeo, cMat);
-                const cx = pos.x * 0.85 + (j - handSize/2) * 0.4; 
-                const cz = pos.z * 0.85 + (j - handSize/2) * 0.4; 
-                cMesh.position.set(cx, 2.5, cz);
-                cMesh.lookAt(0, 2.5, 0); 
-                cMesh.rotation.y += Math.PI; 
-                cMesh.castShadow = true;
-                this.opponentsGroup.add(cMesh);
-            }
+
+            const avatar = new Avatar(avatarSeeds[i]);
+            avatar.group.position.set(pos.x, 0, pos.z);
+            avatar.group.rotation.y = Math.atan2(-pos.x, -pos.z);   // face table centre
+            this.opponentsGroup.add(avatar.group);
+            this.avatars.push(avatar);
+
+            this._addHeldCardFan(pos, backTexture);
         }
+    }
+
+    // A small static arc-fan of card backs standing UPRIGHT in front of an
+    // avatar (like a person holding a fanned hand), turned to face the camera
+    // horizontally. Vertical so it reads as "held up", not lying on the table.
+    // Decorative — the exact count isn't gameplay-significant for opponents.
+    _addHeldCardFan(pos, backTexture, count = 11) {
+        const geo = new THREE.BoxGeometry(1.15, 1.6, 0.04);
+        const mat = new THREE.MeshStandardMaterial({ map: backTexture });
+
+        const up = new THREE.Vector3(0, 1, 0);
+        // Anchor a bit in front of the avatar (toward centre), raised up near the
+        // avatar's face so it looks like cards held up in front of them.
+        const anchor = new THREE.Vector3(pos.x * 0.74, 4.0, pos.z * 0.74);
+        // Face the camera but only by yaw, so the fan stays vertical/upright.
+        const toCam = new THREE.Vector3(this.camera.position.x - anchor.x, 0, this.camera.position.z - anchor.z).normalize();
+        const right = new THREE.Vector3().crossVectors(up, toCam).normalize();   // horizontal
+        const basis = new THREE.Matrix4().makeBasis(right, up, toCam);
+        const baseQuat = new THREE.Quaternion().setFromRotationMatrix(basis);
+
+        const radius = 4.0;     // arc radius
+        const spread = 0.14;    // radians between adjacent cards
+        const mid = (count - 1) / 2;
+        for (let j = 0; j < count; j++) {
+            const a = (j - mid) * spread;
+            const card = new THREE.Mesh(geo, mat);
+            // Upright arc in the (right, up) plane: centre highest, edges lower.
+            card.position.copy(anchor)
+                .addScaledVector(right, radius * Math.sin(a))
+                .addScaledVector(up, radius * (Math.cos(a) - 1))
+                .addScaledVector(toCam, j * 0.02);   // layer toward camera, avoid z-fight
+            // Stand upright facing the camera, then splay each card by rolling it
+            // about its own normal.
+            const roll = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), -a);
+            card.quaternion.copy(baseQuat).multiply(roll);
+            card.castShadow = true;
+            this.opponentsGroup.add(card);
+        }
+    }
+
+    // --- avatar emote/chat hooks (for future networked gestures & chat) ------
+    triggerGesture(slot, name) {
+        const a = this.avatars[slot];
+        if (a) a.playGesture(name);
+    }
+
+    setAvatarLabel(slot, text) {
+        const a = this.avatars[slot];
+        if (a) a.setLabel(text);
     }
 
     getOpponentPosition(index, totalOpponents = 3) {

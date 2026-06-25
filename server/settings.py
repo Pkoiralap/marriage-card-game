@@ -10,6 +10,7 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/6.0/ref/settings/
 """
 
+import os
 from pathlib import Path
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -25,7 +26,10 @@ SECRET_KEY = "django-insecure-ye)u(c7ku67fctb*mgycyhuj8#m$-#hmw4&w02th$4az&!051_
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = [
+    "192.168.1.22",
+    "localhost"
+]
 
 
 # Application definition
@@ -44,14 +48,31 @@ INSTALLED_APPS = [
 
 ASGI_APPLICATION = "server.asgi.application"
 
-CHANNEL_LAYERS = {
-    "default": {
-        "BACKEND": "channels_redis.core.RedisChannelLayer",
-        "CONFIG": {
-            "hosts": [("redis", 6379)],
+# Channel layer.
+#
+# Docker / prod set REDIS_URL (e.g. redis://redis:6379/0) and use Redis so the
+# layer works across multiple worker processes. Local dev sets neither and falls
+# back to the in-process in-memory layer, so a single `manage.py runserver`
+# works out of the box with no Redis and no channels_redis dependency.
+#
+# (Previously this was hardcoded to host "redis", which doesn't resolve outside
+# Docker — so every websocket connect dropped with "Connection lost" locally.)
+REDIS_URL = os.environ.get("REDIS_URL")
+REDIS_HOST = os.environ.get("REDIS_HOST")
+if REDIS_URL or REDIS_HOST:
+    _hosts = [REDIS_URL] if REDIS_URL else [
+        (REDIS_HOST, int(os.environ.get("REDIS_PORT", "6379")))
+    ]
+    CHANNEL_LAYERS = {
+        "default": {
+            "BACKEND": "channels_redis.core.RedisChannelLayer",
+            "CONFIG": {"hosts": _hosts},
         },
-    },
-}
+    }
+else:
+    CHANNEL_LAYERS = {
+        "default": {"BACKEND": "channels.layers.InMemoryChannelLayer"},
+    }
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
@@ -61,6 +82,7 @@ MIDDLEWARE = [
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
+    "game.middleware.NoCacheStaticMiddleware",  # DEBUG: stop browsers caching stale JS modules
 ]
 
 ROOT_URLCONF = "server.urls"
@@ -130,3 +152,7 @@ USE_TZ = True
 
 STATIC_URL = "static/"
 STATICFILES_DIRS = [BASE_DIR / "static"]
+
+# Matches the BigAutoField that migration 0010 set for GameAction, so the
+# auto-PK isn't re-detected as a model change on every makemigrations.
+DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"

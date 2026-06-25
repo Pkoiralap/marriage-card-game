@@ -1,4 +1,5 @@
 import { FAN_RADIUS, FAN_SPACING, HAND_CENTER_POS, CHOICE_POS, DISCARD_ZONE_RADIUS } from '../utils/Constants.js';
+import { hud } from '../utils/Hud.js';
 
 export class InputHandler {
     constructor(renderer, game, callbacks) {
@@ -27,15 +28,151 @@ export class InputHandler {
         this.settlingMesh = null; // Mesh currently settling into hand
         this.lockedDiscardMesh = null; // Mesh locked in place after discard drop
 
+        // Touch tap-to-act state (mobile): first tap "arms" a card/source, the
+        // second tap on the same target performs the pick/discard.
+        this.armedHandIndex = -1;
+        this.armedSource = null;       // 'deck' | 'choice'
+        this.armedSourceMesh = null;
+        this.usingTouch = false;       // once true, ignore (synthesized) mouse events
+        this._touchActive = false;     // a game touch (not on an HTML control) is in progress
+
         window.addEventListener('mousemove', this.onMouseMove.bind(this), false);
         window.addEventListener('mousedown', this.onMouseDown.bind(this), false);
         window.addEventListener('mouseup', this.onMouseUp.bind(this), false);
+
+        // Touch uses a discrete tap model instead of drag (drag-on-touch is
+        // unreliable on phones, especially iOS). Bound to WINDOW like the mouse
+        // handlers so a tap anywhere over the 3D scene is caught regardless of
+        // which element it technically lands on. Taps on HTML controls pass
+        // through untouched so buttons/inputs keep working.
+        window.addEventListener('touchstart', this.onTouchStart.bind(this), { passive: false });
+        window.addEventListener('touchmove', (e) => { if (this._touchActive && e.cancelable) e.preventDefault(); }, { passive: false });
+        window.addEventListener('touchend', (e) => { if (this._touchActive && e.cancelable) e.preventDefault(); this._touchActive = false; }, { passive: false });
+    }
+
+    onTouchStart(event) {
+        // Any touch means this is a touch device: permanently disable the mouse
+        // drag path so iOS's synthesized mouse events can't start phantom drags.
+        this.usingTouch = true;
+        hud.enable();
+        const tgt = event.target;
+        const pt = this.getEventPoint(event);
+        hud.set('touch', `${tgt && tgt.tagName || '?'}#${tgt && tgt.id || ''} @${Math.round(pt.x)},${Math.round(pt.y)}`);
+
+        // Let taps on HTML controls (buttons, inputs, modals, side panels)
+        // behave normally so clicks still fire there.
+        const onControl = event.target && event.target.closest &&
+            event.target.closest('button, input, select, textarea, .modal, '
+                + '#game-log, #game-controls, #sequence-controls, #shown-sequences-container');
+        if (onControl) {
+            this._touchActive = false;
+            hud.set('route', 'HTML control (passthrough)');
+            return;
+        }
+        // A game-surface touch: take over the gesture and run the tap model.
+        this._touchActive = true;
+        if (event.cancelable) event.preventDefault();
+        this.onTap(event);
+    }
+
+    // Visually arm/disarm a deck/choice source (tinted while armed).
+    setArmedSource(source, mesh) {
+        if (this.armedSourceMesh && this.armedSourceMesh !== mesh) {
+            this.renderer.highlightMesh(this.armedSourceMesh, null);
+        }
+        this.armedSource = source;
+        this.armedSourceMesh = mesh;
+        if (mesh) this.renderer.highlightMesh(mesh, 0xffd700);
+    }
+
+    clearArmed() {
+        this.armedHandIndex = -1;
+        if (this.armedSourceMesh) this.renderer.highlightMesh(this.armedSourceMesh, null);
+        this.armedSource = null;
+        this.armedSourceMesh = null;
+    }
+
+    // Tap model: first tap selects/arms, second tap on the same target acts.
+    onTap(event) {
+        hud.set('tap', `myTurn=${this.game.me ? this.game.isMyTurn() : '?'} wait=${this.isWaitingForServer} step=${this.game.turnStep}`);
+        if (!this.game.me || this.isWaitingForServer) { hud.set('route', 'ignored (no me / waiting)'); return; }
+        if (!this.game.isMyTurn()) { hud.set('route', 'ignored (not your turn)'); return; }
+
+        const p = this.getEventPoint(event);
+        this.mouse.x = (p.x / window.innerWidth) * 2 - 1;
+        this.mouse.y = -(p.y / window.innerHeight) * 2 + 1;
+        this.raycaster.setFromCamera(this.mouse, this.renderer.camera);
+
+        // 1) Hand cards
+        const handIntersects = this.raycaster.intersectObjects(this.renderer.cardsGroup.children);
+        hud.set('route', handIntersects.length ? `hit hand card #${handIntersects[0].object.userData.index}` : 'no hand hit');
+        if (handIntersects.length > 0) {
+            const index = handIntersects[0].object.userData.index;
+
+            // Sequence/tunnela/dublee selection: tap toggles membership.
+            if (this.isSelectionMode) {
+                if (this.registeredIndices.has(index)) return;
+                if (this.selectedIndices.has(index)) this.selectedIndices.delete(index);
+                else if (this.selectedIndices.size < 5) this.selectedIndices.add(index);
+                return;
+            }
+
+            // Discard step: arm a card, tap it again to throw it.
+            if (this.game.turnStep === 'DISCARD') {
+                if (this.armedHandIndex === index) {
+                    const mesh = handIntersects[0].object;
+                    const sent = this.callbacks.discardCard(index, mesh.position.clone(), mesh.quaternion.clone());
+                    if (sent) {
+                        this.isWaitingForServer = true;
+                        this.lockedDiscardMesh = mesh;
+                        this.armedHandIndex = -1;
+                    }
+                    // If not sent (busy animating), stay armed so a re-tap retries.
+                } else {
+                    this.armedHandIndex = index;
+                }
+            }
+            return;
+        }
+
+        // 2) Deck / choice during the pick step: arm it, tap again to pick.
+        if (this.game.turnStep === 'PICK') {
+            const deckIntersects = this.raycaster.intersectObjects(this.renderer.deckGroup.children);
+            if (deckIntersects.length > 0) {
+                const mesh = deckIntersects[0].object;
+                const type = mesh.userData.type;
+                if (type === 'deck' || type === 'choice') {
+                    if (this.armedSource === type) {
+                        const sent = this.callbacks.pickCard(type, this.game.me.hand.length);
+                        if (sent) {
+                            this.isWaitingForServer = true;
+                            this.clearArmed();
+                        }
+                        // If not sent (busy animating), stay armed for a re-tap.
+                    } else {
+                        this.setArmedSource(type, mesh);
+                    }
+                    return;
+                }
+            }
+        }
+
+        // Tapped empty space -> disarm.
+        this.clearArmed();
+    }
+
+    // Coordinates from either a mouse event or the first touch point.
+    getEventPoint(event) {
+        const t = (event.touches && event.touches[0]) || (event.changedTouches && event.changedTouches[0]);
+        return t ? { x: t.clientX, y: t.clientY } : { x: event.clientX, y: event.clientY };
     }
 
     onMouseMove(event) {
-        event.preventDefault();
-        this.mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
-        this.mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+        if (this.usingTouch) return;  // touch device: ignore synthesized mouse
+        if (event.cancelable) event.preventDefault();
+        const p = this.getEventPoint(event);
+        this.mouse.x = (p.x / window.innerWidth) * 2 - 1;
+        this.mouse.y = -(p.y / window.innerHeight) * 2 + 1;
 
         this.raycaster.setFromCamera(this.mouse, this.renderer.camera);
 
@@ -67,10 +204,18 @@ export class InputHandler {
     }
 
     onMouseDown(event) {
+        if (this.usingTouch) return;  // touch device: ignore synthesized mouse
         if (!this.game.me || this.isWaitingForServer) return;
-        
+
         // Block all interaction if it's not our turn
         if (!this.game.isMyTurn()) return;
+
+        // Seed the pointer from this event: on touch there is no preceding
+        // move to set this.mouse, so the raycast would otherwise use stale coords.
+        const p = this.getEventPoint(event);
+        this.mouse.x = (p.x / window.innerWidth) * 2 - 1;
+        this.mouse.y = -(p.y / window.innerHeight) * 2 + 1;
+
         this.raycaster.setFromCamera(this.mouse, this.renderer.camera);
         
         // Check for hand cards first
@@ -163,6 +308,7 @@ export class InputHandler {
     }
 
     onMouseUp(event) {
+        if (this.usingTouch) return;  // touch device: ignore synthesized mouse
         if (this.isDragging && this.draggedCardMesh) {
             const oldIndex = this.draggedCardMesh.userData.index;
             const cardPos2D = new THREE.Vector2(this.draggedCardMesh.position.x, this.draggedCardMesh.position.z);
@@ -344,18 +490,19 @@ export class InputHandler {
 
             const target = this.getCardTransform(targetIndex, fanSize);
 
-            // Selection / Registration lift - push vertically "upwards" relative to camera view
-            if (this.selectedIndices.has(myIndex) || this.registeredIndices.has(myIndex)) {
+            // Selection / Registration / armed lift - push "upwards" on screen.
+            const isArmed = (myIndex === this.armedHandIndex);
+            if (this.selectedIndices.has(myIndex) || this.registeredIndices.has(myIndex) || isArmed) {
                 const viewDir = new THREE.Vector3();
                 this.renderer.camera.getWorldDirection(viewDir);
                 const up = new THREE.Vector3(0, 1, 0);
                 const right = new THREE.Vector3().crossVectors(viewDir, up).normalize();
                 const screenUp = new THREE.Vector3().crossVectors(right, viewDir).normalize();
-                
+
                 // Lift "upwards" on the screen (which is screenUp)
-                const liftAmount = this.selectedIndices.has(myIndex) ? 1.5 : 2.5;
+                const liftAmount = isArmed ? 2.0 : (this.selectedIndices.has(myIndex) ? 1.5 : 2.5);
                 target.position.add(screenUp.clone().multiplyScalar(liftAmount));
-                
+
                 // User requested: "must not change their z value"
                 // Removed the viewDir (towards camera) lift.
             }

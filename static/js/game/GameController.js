@@ -5,9 +5,11 @@ import { SocketManager } from '../network/SocketManager.js';
 import { UIManager } from '../ui/UIManager.js';
 
 import { DECK_POS, CHOICE_POS, HAND_CENTER_POS } from '../utils/Constants.js';
+import { hud } from '../utils/Hud.js';
 
 export class GameController {
     constructor() {
+        if (window.location.search.includes('hud')) hud.enable();
         this.game = new Game();
         this.showMode = 'SEQUENCE'; // 'SEQUENCE', 'TUNNELA', 'DUBLEE'
         this.ui = new UIManager({
@@ -61,8 +63,13 @@ export class GameController {
         this.wasManualPick = false;
         this.wasManualDiscard = false;
         this.lastDiscardTransform = null;
-        this.stateQueue = [];
-        this.actionQueue = [];
+        // Single FIFO of {kind:'state'|'action', data} processed in ARRIVAL order.
+        // The server sends a move's resulting state before broadcasting the next
+        // player's action, so strict ordering keeps animations consistent.
+        // (A previous two-queue design drained all actions before any state,
+        // which animated the next player's pick before the prior discard had
+        // landed on the board — cards appeared to fly to the wrong place.)
+        this.eventQueue = [];
         
         // Check if there is a game_id in URL
         this.checkUrlForGame();
@@ -98,15 +105,17 @@ export class GameController {
         this.renderer = new Renderer(gameContainer);
         this.inputHandler = new InputHandler(this.renderer, this.game, {
             pickCard: (source, index) => {
-                if (this.isAnimating) return;
+                if (this.isAnimating) return false;
                 this.wasManualPick = true;
                 this.socket.pickCard(source, index);
+                return true;
             },
             discardCard: (index, pos, quat) => {
-                if (this.isAnimating) return;
+                if (this.isAnimating) return false;
                 this.wasManualDiscard = true;
                 this.lastDiscardTransform = { pos, quat };
                 this.socket.discardCard(index);
+                return true;
             },
             reorderHand: (oldIndex, newIndex) => {
                 this.socket.reorderHand(oldIndex, newIndex);
@@ -114,31 +123,40 @@ export class GameController {
         });
         
         this.socket = new SocketManager(gameId, playerName, (state) => {
-            this.stateQueue.push(state);
+            this.eventQueue.push({ kind: 'state', data: state });
             this.processQueues();
         }, (action) => {
-            this.actionQueue.push(action);
+            this.eventQueue.push({ kind: 'action', data: action });
             this.processQueues();
         });
         
         this.socket.connect();
         this.animate();
-        this.logMessage("Game started! Waiting for players...");
+        this.logMessage(`Game started! Share code <span class="log-card">${gameId}</span> for others to join.`);
     }
 
     async processQueues() {
+        hud.set('queue', `anim=${this.isAnimating} events=${this.eventQueue.length}`);
         if (this.isAnimating) return;
+        if (this.eventQueue.length === 0) return;
 
-        // Prioritize actions over state refreshes for smoother animation flow
-        if (this.actionQueue.length > 0) {
-            const action = this.actionQueue.shift();
-            await this.handleAction(action);
-            return;
-        }
-
-        if (this.stateQueue.length > 0) {
-            const state = this.stateQueue.shift();
-            await this.handleStateUpdate(state);
+        const ev = this.eventQueue.shift();
+        try {
+            // Strict arrival order: a move's state is applied before the next
+            // player's action animates, so the board is always consistent.
+            if (ev.kind === 'action') {
+                await this.handleAction(ev.data);
+            } else {
+                await this.handleStateUpdate(ev.data);
+            }
+        } catch (e) {
+            // A thrown action/state must NOT permanently freeze the queue (that
+            // leaves isAnimating stuck and the table half-rendered). Recover and
+            // keep draining; the failing item was already shifted off the queue.
+            console.error('processQueues error:', e);
+            hud.set('err', (e && e.message) ? e.message : String(e));
+            this.isAnimating = false;
+            if (this.eventQueue.length) this.processQueues();
         }
     }
 
@@ -155,12 +173,16 @@ export class GameController {
             const oldHandMap = new Map(this.game.me.hand.map(c => [c.id, c]));
             this.game.me.updateHand(state.hand, this.renderer.threeRenderer);
             
-            if (this.wasManualPick && this.inputHandler.ghostCard) {
-                const newCardObj = this.game.me.hand.find(c => !oldHandMap.has(c.id));
-                if (newCardObj && newCardObj.mesh) {
-                    newCardObj.mesh.position.copy(this.inputHandler.ghostCard.position);
-                    newCardObj.mesh.quaternion.copy(this.inputHandler.ghostCard.quaternion);
-                    this.inputHandler.settlingMesh = newCardObj.mesh;
+            if (this.wasManualPick) {
+                // Drag pick: settle the new card from the ghost's position.
+                // Tap pick (touch): no ghost — just let the card appear in hand.
+                if (this.inputHandler.ghostCard) {
+                    const newCardObj = this.game.me.hand.find(c => !oldHandMap.has(c.id));
+                    if (newCardObj && newCardObj.mesh) {
+                        newCardObj.mesh.position.copy(this.inputHandler.ghostCard.position);
+                        newCardObj.mesh.quaternion.copy(this.inputHandler.ghostCard.quaternion);
+                        this.inputHandler.settlingMesh = newCardObj.mesh;
+                    }
                 }
                 this.inputHandler.cleanupDrag();
                 this.wasManualPick = false;
@@ -252,13 +274,23 @@ export class GameController {
             let existingMesh = null;
 
             if (action.source === 'choice') {
-                sourcePos.y += (this.game.visibles.length * 0.02);
-                if (action.card && action.card.id !== undefined) {
-                    existingMesh = this.renderer.extractCardMesh(action.card.id);
-                }
-                if (this.game.visibles.length > 0) {
-                    this.game.visibles.pop();
+                // Pick the SPECIFIC card by id and fly it from where it actually
+                // sits — robust to a momentarily-stale board (the picked card may
+                // be a discard that just landed, possibly out of order in MP).
+                const mesh = (action.card && action.card.id !== undefined)
+                    ? this.renderer.extractCardMesh(action.card.id) : null;
+                if (mesh) {
+                    existingMesh = mesh;
+                    sourcePos.copy(mesh.position);  // deckGroup is at origin -> world pos
+                    // Remove exactly this card (not a blind pop of the top).
+                    const idx = this.game.visibles.findIndex(c => c.id === action.card.id);
+                    if (idx !== -1) this.game.visibles.splice(idx, 1);
                     this.renderer.updateChoiceCard(this.game.visibles);
+                } else {
+                    // Card isn't rendered yet (state lagging behind this action):
+                    // animate from the top and let the next state reconcile the
+                    // pile rather than corrupting visibles with a wrong pop.
+                    sourcePos.y += (this.game.visibles.length * 0.02);
                 }
             } else {
                 sourcePos.y += (this.game.stockPileCount / 5 * 0.05);
@@ -326,6 +358,10 @@ export class GameController {
                     }
                 }
             }
+        } else if (action.type.endsWith('_FAILED')) {
+            // Server rejected a show (sequence/tunnela/dublee). Keep the player
+            // in selection mode with their cards still selected so they can fix it.
+            alert(action.reason || "That selection isn't valid.");
         } else if (action.type === 'MAAL_SELECTED') {
             this.game.maalCard = action.card;
             this.logMessage(`<span class="log-player">${action.player_name}</span> has set the Maal card!`);
@@ -422,27 +458,80 @@ export class GameController {
         return { pos, quat };
     }
 
+    // Avatar preset for each opponent, in the renderer's slot order. Slot i maps
+    // to the seat that handleAction also uses as relative index i, so an avatar
+    // lines up with the player whose moves animate at that position.
+    getOpponentAvatarSeeds() {
+        const N = this.game.players.length;
+        if (N <= 1) return [];
+        const me = this.game.getMyIndex();
+        const seeds = [];
+        for (let i = 0; i < N - 1; i++) {
+            let seed = i;
+            if (me !== -1) {
+                const seat = (((me - 1 - i) % N) + N) % N;
+                const p = this.game.players[seat];
+                if (p && p.avatar != null) seed = p.avatar;
+            }
+            seeds.push(seed);
+        }
+        return seeds;
+    }
+
     applyState(state) {
         this.game.updateState(state, this.renderer.threeRenderer);
+        // Deck/choice meshes get rebuilt here, so drop any stale tap-arm.
+        // Guarded so a stale cached InputHandler can never break rendering.
+        if (this.inputHandler && this.inputHandler.clearArmed) this.inputHandler.clearArmed();
         if (this.game.phase === 'PLAYING' || this.game.phase === 'MAAL_REVEALED') {
             this.renderer.removeMarkers();
         }
         this.ui.setPhase(this.game.phase, state.show_sequence_allowed, state.turn_count);
+
+        // --- Rendering FIRST: never let diagnostics/anything below block it. ---
         this.renderer.updateCards(this.game.me.getHandMeshes());
         this.renderer.updateDeck(this.game.stockPileCount);
         this.renderer.updateChoiceCard(this.game.visibles);
-        this.renderer.addOpponents();
-        
+        this.renderer.addOpponents(this.getOpponentAvatarSeeds());
+
         if (state.maal_card) {
             this.game.maalCard = state.maal_card;
             this.renderer.updateMaalCard(state.maal_card);
         }
         this.syncRegisteredIndices();
         this.updateShownSequencesUI();
+
+        // --- Diagnostics LAST (wrapped so a HUD error can't break rendering). ---
+        try {
+            const seqBtn = document.getElementById('show-sequence-btn');
+            this._rx = (this._rx || 0) + 1;
+            hud.set('rx', `${this._rx} states applied`);
+            hud.set('me', `"${this.game.me ? this.game.me.name : '?'}" idx=${this.game.getMyIndex()}`);
+            hud.set('names', JSON.stringify(this.game.players.map(p => p.name)));
+            hud.set('turn', `active=${this.game.turnPlayerIndex} myTurn=${this.game.isMyTurn()}`);
+            hud.set('state', `phase=${this.game.phase} step=${state.turn_step} tc=${state.turn_count} showAllowed=${state.show_sequence_allowed}`);
+            hud.set('seqBtn', seqBtn ? `display=${seqBtn.style.display || '(css)'}` : 'NO ELEMENT');
+        } catch (e) { /* diagnostics are best-effort */ }
     }
 
     animate() {
         requestAnimationFrame(() => this.animate());
+
+        // Watchdog: if an animation stalls (e.g. a backgrounded/throttled mobile
+        // tab loses a completion callback), isAnimating sticks true and the queue
+        // freezes on stale state — looking like "permanently not my turn". Force
+        // recovery after 3s so state updates resume. Normal animations are ~600ms.
+        if (this.isAnimating) {
+            this._animSince = this._animSince || performance.now();
+            if (performance.now() - this._animSince > 3000) {
+                this.isAnimating = false;
+                this._animSince = null;
+                this.processQueues();
+            }
+        } else {
+            this._animSince = null;
+        }
+
         if (this.inputHandler) this.inputHandler.animate();
         if (this.renderer) this.renderer.render();
     }

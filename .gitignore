@@ -6,3 +6,7 @@ __pycache__/
 *.log
 *.pot
 venv
+
+# local/transient
+.gemini/
+state.png

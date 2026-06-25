@@ -18,8 +18,10 @@ export class UIManager {
         // Inputs
         this.createPlayerNameInput = document.getElementById('create-player-name');
         this.createNumPlayersInput = document.getElementById('create-num-players');
+        this.seatConfigContainer = document.getElementById('seat-config');
         this.joinPlayerNameInput = document.getElementById('join-player-name');
         this.joinGameIdInput = document.getElementById('join-game-id');
+        this.ongoingGamesContainer = document.getElementById('ongoing-games');
 
         // Maal State
         this.selectedMaalCardId = null;
@@ -30,11 +32,16 @@ export class UIManager {
     initEventListeners() {
         document.getElementById('show-create-modal-btn')?.addEventListener('click', () => {
             this.createModal.style.display = 'flex';
+            this.renderSeatConfig();
             this.createPlayerNameInput.focus();
         });
 
+        this.createNumPlayersInput?.addEventListener('change', () => this.renderSeatConfig());
+        this.createPlayerNameInput?.addEventListener('input', () => this.syncCreatorSeatName());
+
         document.getElementById('show-join-modal-btn')?.addEventListener('click', () => {
             this.joinModal.style.display = 'flex';
+            this.loadOngoingGames();
             this.joinGameIdInput.focus();
         });
 
@@ -90,19 +97,20 @@ export class UIManager {
 
         document.getElementById('confirm-create-btn')?.addEventListener('click', async () => {
             const playerName = this.createPlayerNameInput.value.trim();
-            const numPlayers = parseInt(this.createNumPlayersInput.value);
             if (!playerName) return alert("Please enter your name");
 
+            const seats = this.gatherSeats(playerName);
             try {
                 const response = await fetch('/create_game/', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json', 'X-CSRFToken': getCookie('csrftoken') },
-                    body: JSON.stringify({ player_name: playerName, num_players: numPlayers })
+                    body: JSON.stringify({ player_name: playerName, num_players: seats.length, seats })
                 });
                 const data = await response.json();
-                if (data.game_id) {
+                if (data.code || data.game_id) {
                     this.createModal.style.display = 'none';
-                    this.callbacks.startGame(data.game_id, playerName);
+                    // Share the short code so others can join this game.
+                    this.callbacks.startGame(data.code || data.game_id, playerName);
                 } else alert("Failed to create game");
             } catch (error) {
                 console.error(error); alert("Error connecting to server");
@@ -116,6 +124,147 @@ export class UIManager {
             
             this.joinModal.style.display = 'none';
             this.callbacks.startGame(gameId, playerName);
+        });
+    }
+
+    // --- create-game seat configuration ------------------------------------
+    // Seat 0 is always the creator (you, human). Other seats default to an
+    // alternating pattern so that every other player is an AI.
+    renderSeatConfig() {
+        const container = this.seatConfigContainer;
+        if (!container) return;
+        const numPlayers = parseInt(this.createNumPlayersInput.value) || 4;
+
+        // Preserve any choices the user already made when the count changes.
+        const previous = this.gatherSeats(this.createPlayerNameInput.value.trim() || 'You');
+        container.innerHTML = '';
+
+        for (let i = 0; i < numPlayers; i++) {
+            const row = document.createElement('div');
+            row.className = 'seat-row';
+            row.dataset.seat = i;
+
+            const label = document.createElement('span');
+            label.className = 'seat-label';
+
+            if (i === 0) {
+                label.textContent = 'Player 1 (You)';
+                row.appendChild(label);
+                row.dataset.type = 'HUMAN';
+                const you = document.createElement('span');
+                you.className = 'seat-you';
+                you.textContent = 'Human';
+                row.appendChild(you);
+                container.appendChild(row);
+                continue;
+            }
+
+            label.textContent = `Player ${i + 1}`;
+            row.appendChild(label);
+
+            const select = document.createElement('select');
+            select.className = 'seat-type form-control';
+            for (const t of ['HUMAN', 'AI']) {
+                const opt = document.createElement('option');
+                opt.value = t;
+                opt.textContent = t === 'AI' ? 'AI' : 'Human';
+                select.appendChild(opt);
+            }
+            // Default: every other seat is AI (odd seats), unless we have a
+            // remembered choice for this seat from before a count change.
+            const remembered = previous[i];
+            select.value = remembered ? remembered.type : (i % 2 === 1 ? 'AI' : 'HUMAN');
+
+            const nameInput = document.createElement('input');
+            nameInput.type = 'text';
+            nameInput.className = 'seat-name form-control';
+            nameInput.placeholder = `Player ${i + 1}`;
+            nameInput.value = (remembered && remembered.name) ? remembered.name : '';
+
+            const syncNameVisibility = () => {
+                nameInput.style.display = select.value === 'HUMAN' ? 'block' : 'none';
+            };
+            select.addEventListener('change', syncNameVisibility);
+            syncNameVisibility();
+
+            row.appendChild(select);
+            row.appendChild(nameInput);
+            container.appendChild(row);
+        }
+    }
+
+    syncCreatorSeatName() {
+        const firstLabel = this.seatConfigContainer?.querySelector('.seat-row[data-seat="0"] .seat-label');
+        const name = this.createPlayerNameInput.value.trim();
+        if (firstLabel) firstLabel.textContent = name ? `${name} (You)` : 'Player 1 (You)';
+    }
+
+    // Returns [{type, name}] in seat order; seat 0 is the creator.
+    gatherSeats(creatorName) {
+        const rows = this.seatConfigContainer
+            ? Array.from(this.seatConfigContainer.querySelectorAll('.seat-row'))
+            : [];
+        if (rows.length === 0) {
+            // Fallback if the config wasn't rendered: creator + alternating AI.
+            const n = parseInt(this.createNumPlayersInput.value) || 4;
+            return Array.from({ length: n }, (_, i) =>
+                i === 0 ? { type: 'HUMAN', name: creatorName }
+                        : { type: i % 2 === 1 ? 'AI' : 'HUMAN', name: '' });
+        }
+        return rows.map((row, i) => {
+            if (i === 0) return { type: 'HUMAN', name: creatorName };
+            const type = row.querySelector('.seat-type')?.value || 'AI';
+            const name = row.querySelector('.seat-name')?.value.trim() || '';
+            return { type, name: type === 'HUMAN' ? name : '' };
+        });
+    }
+
+    // --- join: list of ongoing games with open seats -----------------------
+    async loadOngoingGames() {
+        const container = this.ongoingGamesContainer;
+        if (!container) return;
+        container.innerHTML = '<div class="ongoing-empty">Loading…</div>';
+        try {
+            const resp = await fetch('/games/');
+            const data = await resp.json();
+            this.renderOngoingGames(data.games || []);
+        } catch (e) {
+            container.innerHTML = '<div class="ongoing-empty">Could not load games.</div>';
+        }
+    }
+
+    renderOngoingGames(games) {
+        const container = this.ongoingGamesContainer;
+        container.innerHTML = '';
+        if (games.length === 0) {
+            container.innerHTML = '<div class="ongoing-empty">No open games right now.</div>';
+            return;
+        }
+        games.forEach(game => {
+            const row = document.createElement('div');
+            row.className = 'ongoing-game';
+
+            const code = document.createElement('span');
+            code.className = 'ongoing-code';
+            code.textContent = game.code;
+            row.appendChild(code);
+
+            const seats = document.createElement('div');
+            seats.className = 'ongoing-seats';
+            game.open_seats.forEach(name => {
+                const chip = document.createElement('button');
+                chip.type = 'button';
+                chip.className = 'seat-chip';
+                chip.textContent = name;
+                chip.addEventListener('click', () => {
+                    // Joining takes the seat under its assigned name.
+                    this.joinGameIdInput.value = game.code;
+                    this.joinPlayerNameInput.value = name;
+                });
+                seats.appendChild(chip);
+            });
+            row.appendChild(seats);
+            container.appendChild(row);
         });
     }
 

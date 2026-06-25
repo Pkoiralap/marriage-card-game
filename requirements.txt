@@ -2,3 +2,6 @@ django>=5.0,<6.0
 channels>=4.0.0
 daphne>=4.0.0
 channels_redis>=4.0.0
+# Pin redis-py: 8.x breaks channels_redis 4.x (blocking reads raise
+# "Timeout reading from redis" ~5s after connect, dropping every websocket).
+redis>=5,<6
