@@ -400,3 +400,56 @@ relays messages between agents when an entry below requests it.
     - JS (`GameController.js`, `UIManager.js`, `SocketManager.js`): all `// S1`,
       additive, except the relaxed `onClaimGame` gate. S4's HUD removal also
       touches `GameController.js` — edits are localized.
+- (QA S1 Game loop) Reviewed `origin/master...HEAD` @ `0d26bcd`, tested, fixed one
+  real bug, added 4 tests. Final: **119 backend tests green**; `node --check` clean
+  on the 3 changed JS files.
+  - **BUG (Med) — `play_again` re-deal race / spam.** `play_again` did a non-atomic
+    read-modify-write: `game = get(); if game.is_active: return; start_new_round()`.
+    Two play-again messages (multiple humans clicking the banner, or one client
+    double-firing) after the same finished round could each pass the `is_active`
+    check before either saved, re-dealing twice — skipping a round number and
+    double-broadcasting `NEW_ROUND`. **Fixed (`# S1`, additive):** new
+    `_begin_new_round_if_finished()` does a compare-and-set inside
+    `transaction.atomic()` — a single `Game.objects.filter(is_active=False)
+    .update(is_active=True)`; the returned row count decides who won the flip, and
+    only the winner calls `start_new_round()`. Other callers no-op. Added
+    `test_play_again_cannot_be_spammed_to_redeal_twice`.
+  - **Investigated, NOT a bug (key finding) — shown+hand union double-count.** When
+    a claimant has shown <3 sequences, `register_sequence` keeps those cards in
+    `hand` AND in `shown_sequences`, so `claim_game` unions a physical card twice.
+    Proved (pure probes + DB test `test_partial_show_double_count_does_not_falsely_win`)
+    that this can **never manufacture a win**: the duplicated group is itself an
+    already-valid meld, so `is_winning_hand(union)` ⇔ (real 21-card hand wins) ∧
+    (dup is a meld) — the verdict is unchanged. So the double-count is benign for
+    the claim verdict; no fix needed. (In the normal path all-3-shown strips the
+    cards from hand, so there's no double-count at all.) Left as-is rather than
+    deduping, to stay minimal.
+  - **Verified OK (no change):** `is_winning_claim([],hand) == is_winning_hand(hand)`
+    (agrees by construction); ≥1-pure-sequence rule holds (rejects 7-tunnela hand);
+    maal empty-set pre-maal works; out-of-turn claim → `CLAIM_FAILED`, game stays
+    active, no points; invalid claim rejected, no game end. Scoring: winner 0,
+    loser = `unmelded_points(concealed)` capped 100, cumulative `Player.points`
+    correct across rounds. **Standings rank by *cumulative* total, not the round
+    winner** — verified the round winner can sit below a lower-total loser
+    (`test_standings_ranked_by_cumulative_not_round_winner`); `is_winner` still
+    flags the round winner. (Ties get distinct sequential ranks — cosmetic, left.)
+    **AI win goes through the same `_finish_round`** — broadcasts standings + a
+    `results` payload and accumulates loser points
+    (`test_ai_win_finish_round_accumulates_and_broadcasts`). `start_new_round`
+    re-deals 21 each, resets hand/shown/turn_count/maal/visibles, rotates dealer,
+    bumps `round_number`, keeps `Player.points`, `deal_cards` resets phase/turn_step.
+    Migration `0013` applies; `makemigrations --check` clean. `NEW_ROUND` →
+    `broadcast_action` → `broadcast_refresh`, so every client re-fetches the new
+    hand. **Note (out of S1 scope):** a human can only claim at the START of their
+    turn (PICK step) with an already-complete 21 — after a discard the turn has
+    advanced off them, so `_is_turn` would reject; there's no human discard-to-claim
+    atomic action (the AI has one via `_ai_claim`). Works, slightly different rule
+    feel.
+  - **Merge notes:** all changes `# S1`-scoped/additive. `consumers.py` overlap with
+    S2 (`register_sequence`) / S3 (timer) is in different methods — claim/scoring is
+    self-contained; the new `_begin_new_round_if_finished` is a fresh method.
+    **The `DispatchTests` expected-set line** (now lists `'play_again'`) is the one
+    non-additive line S2/S3 also edit — **merge by union**. **S3's timer auto-claim
+    should route through `_finish_round`** (not inline a `GAME_CLAIMED` broadcast) so
+    it scores + accumulates points like the human/AI paths. No cross-feature action
+    needed otherwise.

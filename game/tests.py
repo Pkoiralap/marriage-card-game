@@ -923,6 +923,70 @@ class ClaimGameValidationTests(TransactionTestCase):
         game.refresh_from_db()
         self.assertTrue(game.is_active)  # round continues
 
+    def test_ai_win_finish_round_accumulates_and_broadcasts(self):
+        # S1: an AI win goes through the SAME _finish_round path, so standings
+        # are broadcast and loser points accumulate.
+        game = Game.objects.create(
+            num_players=2, code=Game.generate_code(), deck=[], visibles=[],
+            turn_step='DISCARD', turn_player_index=0)
+        winner = Player.objects.create(
+            name="Bot", game=game, player_type='AI', hand=_winning_21())
+        loser = Player.objects.create(
+            name="Bob", game=game, player_type='HUMAN', points=5,
+            hand=[_card("HEART", "K", 1), _card("SPADE", "Q", 2)])
+        c = self._consumer(game.code)
+        players = list(game.players.all().order_by('created_at'))
+        self._run(c._finish_round(game, players, "Bot"))
+        self.assertEqual(c.rejects, [])
+        action = c.sent[0]
+        self.assertEqual(action['type'], 'GAME_CLAIMED')
+        self.assertEqual(action['results']['winner'], 'Bot')
+        names = {s['name']: s for s in action['results']['standings']}
+        self.assertEqual(names['Bot']['round_points'], 0)
+        self.assertTrue(names['Bot']['is_winner'])
+        self.assertEqual(names['Bob']['round_points'], 20)
+        self.assertEqual(names['Bob']['total_points'], 25)
+        loser.refresh_from_db(); winner.refresh_from_db()
+        self.assertEqual(loser.points, 25)
+        self.assertEqual(winner.points, 0)
+        game.refresh_from_db()
+        self.assertFalse(game.is_active)
+
+    def test_standings_ranked_by_cumulative_not_round_winner(self):
+        # The round winner can still trail on the match scoreboard if they
+        # carry heavy prior-round points. Standings rank by cumulative total.
+        game = Game.objects.create(
+            num_players=2, code=Game.generate_code(), deck=[], visibles=[],
+            turn_step='DISCARD', turn_player_index=0)
+        # Winner carries 90 prior points; loser only 5 + 20 this round = 25.
+        Player.objects.create(
+            name="Alice", game=game, player_type='HUMAN', points=90,
+            hand=_winning_21())
+        Player.objects.create(
+            name="Bob", game=game, player_type='HUMAN', points=5,
+            hand=[_card("HEART", "K", 1), _card("SPADE", "Q", 2)])
+        c = self._consumer(game.code)
+        players = list(game.players.all().order_by('created_at'))
+        self._run(c._finish_round(game, players, "Alice"))
+        standings = c.sent[0]['results']['standings']
+        ranked = {s['rank']: s['name'] for s in standings}
+        # Bob (25 total) leads the scoreboard despite losing the round.
+        self.assertEqual(ranked[1], 'Bob')
+        self.assertEqual(ranked[2], 'Alice')
+
+    def test_partial_show_double_count_does_not_falsely_win(self):
+        # If a player shows < 3 sequences, those cards remain in `hand` AND in
+        # `shown_sequences`, so claim_game unions a card twice. Verify this never
+        # *manufactures* a win: a non-winning holding still gets CLAIM_FAILED.
+        cards = _winning_21()
+        cards[0] = _card("DIAMOND", "2", 999)  # break the partition
+        # Pretend one (still-incomplete) sequence was registered but not stripped.
+        game, player = self._game(hand=cards, shown=[cards[3:6]])
+        c = self._consumer(game.code)
+        self._run(c.claim_game('Alice'))
+        self.assertEqual(c.sent, [])
+        self.assertEqual(c.rejects[0][0], 'CLAIM_FAILED')
+
     def test_claim_rejected_when_not_your_turn(self):
         cards = _winning_21()
         game = Game.objects.create(
@@ -1033,6 +1097,35 @@ class PlayAgainTests(TransactionTestCase):
         game.refresh_from_db()
         self.assertEqual(game.round_number, 1)  # unchanged
         self.assertEqual(c.sent, [])
+
+    def test_play_again_cannot_be_spammed_to_redeal_twice(self):
+        # S1: two play-again messages after the same finished round must only
+        # re-deal once (compare-and-set on is_active), not bump the round twice.
+        game = Game.objects.create(
+            num_players=2, code=Game.generate_code(), round_number=1,
+            is_active=False, turn_player_index=0)
+        game.initialize_deck()
+        Player.objects.create(name="A", game=game, is_dealer=True)
+        Player.objects.create(name="B", game=game)
+        game.deal_cards()
+
+        c = GameConsumer()
+        c.room_name = game.code
+        c.room_group_name = 'game_%s' % game.code
+        c.sent = []
+
+        async def fake_broadcast_action(action):
+            c.sent.append(action)
+        c.broadcast_action = fake_broadcast_action
+        c._ensure_ai_running = lambda: None
+
+        async_to_sync(c.play_again)('A')
+        async_to_sync(c.play_again)('A')  # second click — must be a no-op now
+
+        game.refresh_from_db()
+        self.assertEqual(game.round_number, 2)  # only one re-deal
+        new_rounds = [a for a in c.sent if a['type'] == 'NEW_ROUND']
+        self.assertEqual(len(new_rounds), 1)
 
 
 if __name__ == "__main__":

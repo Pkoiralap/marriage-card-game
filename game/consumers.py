@@ -364,10 +364,14 @@ class GameConsumer(AsyncWebsocketConsumer):
     # state, then broadcasts NEW_ROUND so every client re-fetches and the AI
     # loop restarts if the dealer rotated onto an AI seat.
     async def play_again(self, player_name):
-        game = await sync_to_async(Game.objects.get)(code=self.room_name)
-        if game.is_active:
-            return  # round still in progress; ignore stray play-again
-        await sync_to_async(game.start_new_round)()
+        # S1: claim the right to re-deal atomically so concurrent / spammed
+        # play-again messages (multiple humans clicking, or one client double-
+        # firing) can't each re-deal and skip/duplicate the round. A single
+        # conditional flip of is_active False->True acts as a compare-and-set;
+        # only the winner of that flip proceeds to deal a fresh round.
+        game = await sync_to_async(self._begin_new_round_if_finished)()
+        if game is None:
+            return  # round still in progress (or already re-dealt); ignore
         await self.broadcast_action({
             'type': 'NEW_ROUND',
             'player_name': player_name,
@@ -375,6 +379,21 @@ class GameConsumer(AsyncWebsocketConsumer):
             'message': f"Round {game.round_number} — new hands dealt.",
         })
         self._ensure_ai_running()
+
+    # S1: compare-and-set guard around the re-deal. Returns the freshly-dealt
+    # game when THIS caller won the (finished -> active) flip, else None.
+    def _begin_new_round_if_finished(self):
+        with transaction.atomic():
+            # Flip is_active False->True in one statement; the row count tells us
+            # whether we won the race against any concurrent play-again.
+            won = (Game.objects
+                   .filter(code=self.room_name, is_active=False)
+                   .update(is_active=True))
+            if not won:
+                return None
+            game = Game.objects.get(code=self.room_name)
+            game.start_new_round()  # re-deals; also (re)sets is_active=True
+            return game
 
     # F1: cosmetic gesture/emote. Validated against the shared allowlist and
     # broadcast to everyone (including the sender) as a GESTURE action. It does
