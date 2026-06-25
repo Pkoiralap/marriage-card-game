@@ -89,3 +89,26 @@ relays messages between agents when an entry below requests it.
     define the listed tokens on `:root` (already in the contract). Shared-file
     edits all marked `# F1`/`// F1`; the one non-additive change is adding
     `'gesture'` to the expected set in `DispatchTests.test_known_message_types_covered`.
+- (QA, branch `feat/gestures`) Reviewed `origin/master...HEAD`. 58 backend tests
+  green; `node --check` clean on all 4 changed JS files.
+  - **Bug found & fixed (low–med, cosmetic, persistent)**: stuck head-roll after
+    `think`/`shrug`. Idle (`Avatar.update`) re-asserts `group.position.y`,
+    `group.rotation.z`, `headPivot.rotation.{x,y}`, `armL/R.rotation.{x,z}` and
+    `eyes.scale.y` every frame, but never `headPivot.rotation.z` — which only the
+    `think`/`shrug` gestures drive. The gesture overlay stops at `k>=1`, so on a
+    frame where the last-applied `ease` hadn't reached 0, a residual roll (up to
+    ~0.08 rad) stayed forever until the next gesture. Fix: reset
+    `this.headPivot.rotation.z = 0` in the idle block (`// F1`, additive). Verified
+    by a Node simulation of the reset+overlay math (residual now 0).
+  - **Verified OK (no change needed)**: queue safety — `GESTURE` in `handleAction`
+    never sets `isAnimating`, calls `processQueues()` and returns; a gesture
+    arriving mid-card-anim simply waits in `eventQueue` (no interrupt/corruption,
+    no stall). `getAvatarSlotForPlayer` is the exact inverse of
+    `getOpponentAvatarSeeds` (`seat s -> slot (me-1-s) mod N`, always in 0..N-2);
+    self/not-seated/N<=1 return -1 → safe no-op; `Renderer.triggerGesture` is
+    bounds-guarded. `is_valid_gesture`/`GESTURES` match the 11 implemented
+    gestures exactly (asserted by `test_allowlist_matches_implemented_gestures`).
+    Server rejects unknown/empty/None gestures. Emote menu uses `pointer-events:
+    none` when closed (taps pass through to the InputHandler tap layer); right-
+    anchored, doesn't overlap the centered `#game-controls`; mobile lift matches.
+    No NaN sources (durations table never 0). Final: **58 tests green.**

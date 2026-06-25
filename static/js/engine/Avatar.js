@@ -282,6 +282,10 @@ export class Avatar {
         this.group.rotation.z = Math.sin(t * 0.9 + ph) * 0.04;
         this.headPivot.rotation.y = Math.sin(t * 0.5 + ph) * 0.35;
         this.headPivot.rotation.x = Math.sin(t * 0.7 + ph) * 0.05;
+        // F1: idle never drives head roll, but the `think`/`shrug` gestures do
+        // (headPivot.rotation.z). Reset it each frame so the head doesn't stay
+        // tilted after a gesture ends on a frame where ease hadn't reached 0.
+        this.headPivot.rotation.z = 0;
         const armSway = Math.sin(t * 1.2 + ph) * 0.12;
         this.armL.rotation.x = armSway;
         this.armR.rotation.x = -armSway;
