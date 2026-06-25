@@ -341,7 +341,11 @@ export class UIManager {
         const msgEl = document.getElementById('game-banner-msg');
         const btn = document.getElementById('game-banner-btn');
         if (titleEl) titleEl.textContent = title || 'Game over';
-        if (msgEl) msgEl.textContent = message || '';
+        if (msgEl) {
+            msgEl.textContent = message || '';
+            // S1: standings are passed as newline-separated lines; render them.
+            msgEl.style.whiteSpace = 'pre-line';
+        }
         banner.classList.remove('win', 'lose');
         if (outcome === 'win' || outcome === 'lose') banner.classList.add(outcome);
         if (btn) {
@@ -349,6 +353,12 @@ export class UIManager {
         }
         banner.style.display = 'flex';
         return true;
+    }
+
+    // S1: dismiss the end-of-round banner (used when starting another round).
+    hideGameBanner() {
+        const banner = document.getElementById('game-banner');
+        if (banner) banner.style.display = 'none';
     }
 
     showSequenceControls() {

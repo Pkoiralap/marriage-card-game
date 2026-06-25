@@ -27,9 +27,13 @@ from .melds import (
     is_winning_hand,
 )
 from .scoring import (
+    DEFAULT_MAX_ROUND_PENALTY,  # S1
     DEFAULT_POINT_VALUES,
     card_points,
     hand_points,
+    is_winning_claim,  # S1
+    round_penalty,  # S1
+    round_scores,  # S1
     unmelded_points,
 )
 
@@ -42,4 +46,6 @@ __all__ = [
     "MIN_SEQUENCE", "TUNNELA_SIZE", "DUBLEE_SIZE",
     # scoring
     "card_points", "hand_points", "unmelded_points", "DEFAULT_POINT_VALUES",
+    "is_winning_claim", "round_penalty", "round_scores",  # S1
+    "DEFAULT_MAX_ROUND_PENALTY",  # S1
 ]

@@ -66,11 +66,10 @@ export class GameController {
                 this.socket.confirmMaal(cardId);
             },
             onClaimGame: () => {
-                if (this.game.me.hand.length === 1) {
-                    this.socket.claimGame();
-                } else {
-                    this.notify("You must have only 1 card remaining to claim the game", 'warn');
-                }
+                // S1: the server now validates the full hand (shown melds +
+                // concealed) via the rules engine and rejects bad claims with a
+                // CLAIM_FAILED message, so we just send it.
+                if (this.socket) this.socket.claimGame();
             },
             // F1: send a cosmetic gesture/emote. The server broadcasts it back as
             // a GESTURE action which handleAction maps to the right avatar slot.
@@ -412,20 +411,41 @@ export class GameController {
             this.logMessage(`<span class="log-player">${action.player_name}</span> has set the Maal card!`);
             this.renderer.updateMaalCard(action.card);
         } else if (action.type === 'GAME_CLAIMED') {
+            // S1: end of round. Show winner + standings; "Play again" re-deals a
+            // fresh round in the same room (cumulative points preserved) instead
+            // of reloading the page.
             const myName = this.game.me ? this.game.me.name : null;
             const iWon = action.player_name && myName && action.player_name === myName;
-            const title = iWon ? 'You won! 🎉' : 'Game over';
-            const msg = action.message
-                || (action.player_name ? `${action.player_name} claimed the game.` : 'The game has ended.');
-            // Prefer the styled banner; fall back to toast/alert + reload.
+            const title = iWon ? 'You won! 🎉' : 'Round over';
+            let msg = action.message
+                || (action.player_name ? `${action.player_name} claimed the round.` : 'The round has ended.');
+            const standings = action.results && action.results.standings;
+            if (Array.isArray(standings) && standings.length) {
+                const lines = standings.map(s =>
+                    `${s.rank}. ${s.name}: ${s.total_points} pts (+${s.round_points})`);
+                msg = msg + '\n' + lines.join('\n');
+            }
+            const playAgain = () => {
+                if (this.socket) {
+                    this.ui.hideGameBanner ? this.ui.hideGameBanner() : null;
+                    this.socket.playAgain();
+                } else {
+                    location.reload();
+                }
+            };
             const shown = this.ui.showGameBanner(
-                title, msg, iWon ? 'win' : 'lose', () => location.reload()
+                title, msg, iWon ? 'win' : 'lose', playAgain
             );
             this.ui.hideTurnIndicator();
             if (!shown) {
                 this.notify(msg, iWon ? 'success' : 'info');
-                location.reload();
             }
+        } else if (action.type === 'NEW_ROUND') {
+            // S1: a fresh round was dealt. Dismiss the banner; the refresh_state
+            // that follows broadcast_action re-fetches everyone's new hand.
+            if (this.ui.hideGameBanner) this.ui.hideGameBanner();
+            this.logMessage(action.message || 'A new round has started.');
+            this.notify(action.message || 'New round started.', 'info');
         } else if (action.type === 'CHAT') {
             // F2: a quick-chat line. Show a bubble over the speaker (opponents
             // only; mapped player->slot like getOpponentAvatarSeeds) AND log it.

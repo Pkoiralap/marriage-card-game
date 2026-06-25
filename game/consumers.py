@@ -19,6 +19,8 @@ from .logic import (
     claim_discard_index,
 )
 from .rules import Card, is_sequence, is_tunnela, is_dublee
+# S1: real claim validation + round scoring over the whole holding.
+from .rules import is_winning_claim, round_scores
 from . import emotes  # F1: gesture allowlist (is_valid_gesture) + F2: quick-chat phrases
 
 logger = logging.getLogger(__name__)
@@ -51,6 +53,7 @@ class GameConsumer(AsyncWebsocketConsumer):
         'claim_game':        ('claim_game',        ('player_name',)),
         'gesture':           ('gesture',           ('player_name', 'gesture')),  # F1
         'chat':              ('chat',              ('player_name', 'phrase_id')),  # F2
+        'play_again':        ('play_again',        ('player_name',)),  # S1
     }
 
     # --- connection lifecycle ----------------------------------------------
@@ -281,18 +284,97 @@ class GameConsumer(AsyncWebsocketConsumer):
             'card': card_to_move,
         })
 
+    # S1: real win validation. The claimant's whole holding (shown melds +
+    # concealed hand) must form a winning hand under the rules engine — the old
+    # "1 card left" trust is gone. On a valid claim we score the round and end
+    # the game; an invalid claim is rejected with a typed CLAIM_FAILED so the
+    # client can keep the player in the round.
     async def claim_game(self, player_name):
-        ctx = await self._load(player_name)
-        # TODO: validate the full hand with rules.is_winning_hand once the claim
-        # flow tracks maal-jokers. For now trust the client's "1 card left" rule.
-        if len(ctx.player.hand) == 1:
-            ctx.game.is_active = False
-            await sync_to_async(ctx.game.save)()
-            await self.broadcast_action({
-                'type': 'GAME_CLAIMED',
-                'player_name': player_name,
-                'message': f"{player_name} has won the game!",
+        ctx = await self._load(player_name, with_players=True)
+        if not self._is_turn(ctx):
+            return await self.send_reject('CLAIM_FAILED', "It's not your turn.")
+
+        player = ctx.player
+        jokers = jokers_from_maal(player.hand, ctx.game.maal_card)
+        shown = [grp for grp in (player.shown_sequences or []) if grp]
+        if not is_winning_claim(shown, player.hand, jokers):
+            return await self.send_reject(
+                'CLAIM_FAILED',
+                "Your hand isn't a complete winning hand yet.")
+
+        await self._finish_round(ctx.game, ctx.players, player.name)
+
+    # S1: end the round — compute cumulative scores, persist, broadcast results.
+    async def _finish_round(self, game, players, winner_name):
+        results = await sync_to_async(self._score_and_persist)(game, players, winner_name)
+        game.is_active = False
+        await sync_to_async(game.save)(update_fields=['is_active'])
+        await self.broadcast_action({
+            'type': 'GAME_CLAIMED',
+            'player_name': winner_name,
+            'message': f"{winner_name} has won the round!",
+            'results': results,
+        })
+
+    # S1: pure-ish scoring bridge. Builds the per-player payload the rules engine
+    # needs, runs `round_scores`, adds each round penalty to the cumulative
+    # `Player.points`, and returns the standings payload for the client.
+    def _score_and_persist(self, game, players, winner_name):
+        if players is None:
+            players = list(game.players.all().order_by('created_at'))
+        roster = []
+        for p in players:
+            roster.append({
+                'name': p.name,
+                'is_winner': (p.name == winner_name),
+                'shown': [grp for grp in (p.shown_sequences or []) if grp],
+                'hand': p.hand,
             })
+
+        def jokers_for(name):
+            p = next((q for q in players if q.name == name), None)
+            return jokers_from_maal(p.hand, game.maal_card) if p else set()
+
+        scored = round_scores(roster, jokers_for=jokers_for)
+        by_name = {s['name']: s for s in scored}
+        results = []
+        for p in players:
+            s = by_name.get(p.name, {'points': 0, 'is_winner': False})
+            p.points = (p.points or 0) + s['points']
+            p.save(update_fields=['points'])
+            results.append({
+                'name': p.name,
+                'player_type': p.player_type,
+                'is_winner': s['is_winner'],
+                'round_points': s['points'],   # penalty taken this round
+                'total_points': p.points,      # cumulative across rounds
+            })
+        # Standings: lowest cumulative points first (Marriage = low score wins).
+        results.sort(key=lambda r: r['total_points'])
+        for i, r in enumerate(results):
+            r['rank'] = i + 1
+        return {
+            'round_number': game.round_number,
+            'winner': winner_name,
+            'standings': results,
+        }
+
+    # S1: re-deal a fresh round in the same room (cumulative points preserved).
+    # Any human may trigger it from the end-of-round banner. Resets per-round
+    # state, then broadcasts NEW_ROUND so every client re-fetches and the AI
+    # loop restarts if the dealer rotated onto an AI seat.
+    async def play_again(self, player_name):
+        game = await sync_to_async(Game.objects.get)(code=self.room_name)
+        if game.is_active:
+            return  # round still in progress; ignore stray play-again
+        await sync_to_async(game.start_new_round)()
+        await self.broadcast_action({
+            'type': 'NEW_ROUND',
+            'player_name': player_name,
+            'round_number': game.round_number,
+            'message': f"Round {game.round_number} — new hands dealt.",
+        })
+        self._ensure_ai_running()
 
     # F1: cosmetic gesture/emote. Validated against the shared allowlist and
     # broadcast to everyone (including the sender) as a GESTURE action. It does
@@ -490,19 +572,15 @@ class GameConsumer(AsyncWebsocketConsumer):
         if discarded:
             await asyncio.sleep(0.6)
 
-        game = await sync_to_async(Game.objects.get)(code=self.room_name)
-        game.is_active = False
-        await sync_to_async(game.save)()
-
-        # F3+F1+F2: the AI celebrates its win before the game-over banner (which
-        # makes clients reload), so the emote is actually seen.
+        # F3+F1+F2: the AI celebrates its win before the game-over banner, so the
+        # emote is actually seen.
         await self._ai_emote(player.name, gesture='celebrate', phrase_id='iwin', pause=1.0)
 
-        await self.broadcast_action({
-            'type': 'GAME_CLAIMED',
-            'player_name': player.name,
-            'message': f"{player.name} has won the game!",
-        })
+        # S1: score the round through the same shared path the human claim uses
+        # so AI wins also broadcast a standings payload (and points accumulate).
+        game = await sync_to_async(Game.objects.get)(code=self.room_name)
+        players = await sync_to_async(list)(game.players.all().order_by('created_at'))
+        await self._finish_round(game, players, player.name)
         return True
 
     async def _ai_maybe_quip(self, player_name):
@@ -612,6 +690,7 @@ class GameConsumer(AsyncWebsocketConsumer):
             'hand_size': len(p.hand),
             'has_shown': len([s for s in p.shown_sequences if s]) >= 3,
             'avatar': p.avatar,
+            'points': p.points,  # S1: cumulative score across rounds
         } for p in players_models]
 
         has_shown_all = len([s for s in player.shown_sequences if s]) >= 3
@@ -632,6 +711,8 @@ class GameConsumer(AsyncWebsocketConsumer):
             'phase': game.phase,
             'players': players_data,
             'maal_card': visible_maal,
+            'round_number': game.round_number,  # S1
+            'is_active': game.is_active,  # S1
         }
 
         await self.send(text_data=json.dumps({

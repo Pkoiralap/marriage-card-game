@@ -335,3 +335,68 @@ relays messages between agents when an entry below requests it.
 
 ## Batch-2 Log
 - (orchestrator) Batch 2 launched from master `6bf4436`.
+- (S1 Game loop + scoring) `feat/gameloop`. Closed the game loop with real
+  win-validation + scoring + multi-round.
+  - **Claim rule (real)**: `claim_game` no longer trusts "1 card left". It now
+    validates the claimant's *whole* holding — shown melds (`shown_sequences`) +
+    concealed `hand` — via new pure helper `rules.is_winning_claim(shown, hand,
+    jokers)` (a thin union wrapper over `is_winning_hand`, still requiring ≥1 pure
+    sequence overall). Maal jokers come from F3's `jokers_from_maal(hand, maal_card)`
+    (empty set when no maal revealed — no hard dep on S2). Out-of-turn / incomplete
+    claims are rejected with a typed `CLAIM_FAILED` (client shows it via the
+    existing `_FAILED` toast path). The client `onClaimGame` gate was relaxed —
+    server is the authority now.
+  - **Scoring formula**: Marriage low-score-wins. Winner = 0; each loser =
+    `rules.round_penalty(shown, hand, jokers)` = `unmelded_points` of their
+    *concealed* hand (shown melds are free; any still-melding remainder is free),
+    capped at `DEFAULT_MAX_ROUND_PENALTY = 100`/round. Pure helpers
+    `round_penalty` + `round_scores` in `game/rules/scoring.py` (exported from
+    `game/rules/__init__.py`). Consumer bridge `_score_and_persist` adds each
+    round penalty to cumulative `Player.points` and builds the standings payload.
+  - **Results payload** (on `GAME_CLAIMED`, new `results` key):
+    `{round_number, winner, standings:[{name, player_type, is_winner,
+    round_points, total_points, rank}]}` sorted by `total_points` asc (rank 1 =
+    leader). Both human `claim_game` and AI `_ai_claim` now go through one shared
+    `_finish_round(game, players, winner_name)` so AI wins also broadcast
+    standings + accumulate points. Client `GAME_CLAIMED` handler renders the
+    standings in F4's `UIManager.showGameBanner(...)` (banner `<p>` now uses
+    `white-space:pre-line`).
+  - **Multi-round / play again**: new `Game.start_new_round()` re-deals a fresh
+    deck, resets per-round state (`hand`, `shown_sequences`, `turn_count`),
+    rotates the dealer one seat, clears `maal_card`, bumps `round_number`, sets
+    `is_active=True` — **keeps `Player.points`** (cumulative). New consumer
+    handler `play_again` (DISPATCH `'play_again'`, `# S1`) triggers it (ignored
+    while a round is active), broadcasts `{type:'NEW_ROUND', round_number, ...}`,
+    and restarts the AI loop. Client: `SocketManager.playAgain()`, banner
+    "Play again" now sends `play_again` instead of `location.reload()`;
+    `NEW_ROUND` dismisses the banner (new `UIManager.hideGameBanner()`); the
+    `refresh_state` that follows re-fetches everyone's new hand. `send_game_state`
+    now includes `round_number`, `is_active`, and per-player cumulative `points`.
+  - **Model field + migration**: added `Game.round_number` (IntegerField,
+    default 1). Migration `game/migrations/0013_game_round_number.py` (orchestrator
+    resolves any sibling `0013_*` via `makemigrations --merge`). No new Player
+    field — cumulative scoring reuses existing `Player.points`.
+  - **Tests**: +16 (99 -> 115, all green). `RoundScoringTests` (pure: claim
+    valid/invalid, no-pure-sequence rejection, penalty/cap, winner-0/loser-penalty
+    math), `ClaimGameValidationTests` (valid claim ends+scores, claim with shown
+    melds, invalid -> CLAIM_FAILED + game stays active, out-of-turn rejected,
+    loser points accumulate), `PlayAgainTests` (re-deal resets hands/keeps points/
+    rotates dealer, handler re-deals, ignored while active). The two DB-backed
+    consumer classes use `TransactionTestCase` + `async_to_sync` (the consumer's
+    threaded `sync_to_async` DB access deadlocks SQLite under a plain `TestCase`
+    transaction). `node --check` clean on the 3 changed JS files.
+  - **Merge risks**:
+    - **`consumers.py`** (shared hot file): all edits `# S1`-marked — import line
+      (`is_winning_claim, round_scores`), DISPATCH `'play_again'` entry at the end,
+      rewrote `claim_game`, added `_finish_round`/`_score_and_persist`/`play_again`,
+      reworked the tail of `_ai_claim` (it now calls `_finish_round` instead of
+      inlining the broadcast). Overlaps S2 (`register_sequence`) and S3 (timer) but
+      in different methods; claim/scoring is self-contained. S3's timer should call
+      `_finish_round` on an auto-claim if it wants the same scoring.
+    - **`models.py`**: additive `round_number` field + `start_new_round()` method;
+      migration `0013_game_round_number`.
+    - **`tests.py`**: extended the DISPATCH coverage set (`'play_again'`) — same
+      non-additive line S2/S3 will also touch; merge by union.
+    - JS (`GameController.js`, `UIManager.js`, `SocketManager.js`): all `// S1`,
+      additive, except the relaxed `onClaimGame` gate. S4's HUD removal also
+      touches `GameController.js` — edits are localized.

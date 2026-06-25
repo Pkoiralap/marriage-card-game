@@ -28,6 +28,7 @@ class Game(models.Model):
     phase = models.CharField(max_length=20, default='DEALING')
     turn_step = models.CharField(max_length=20, default='PICK') # 'PICK', 'DISCARD'
     maal_card = models.JSONField(null=True, blank=True)
+    round_number = models.IntegerField(default=1)  # S1: increments each re-deal; Player.points is cumulative
 
     def __str__(self):
         return self.code or str(self.id)
@@ -90,6 +91,33 @@ class Game(models.Model):
         self.phase = 'PLAYING'
         self.turn_step = 'PICK'
         self.save()
+
+    def start_new_round(self):
+        """S1: re-deal a fresh round in the same room, keeping cumulative points.
+
+        Resets every player's per-round state (hand, shown sequences, turn_count)
+        but NOT their ``points`` (cumulative across rounds). Rotates the dealer so
+        the next player leads, reshuffles a new deck, deals, and clears the maal.
+        """
+        players = list(self.players.all().order_by('created_at'))
+        n = len(players) or 1
+        # Rotate the lead/dealer one seat for the new round.
+        prev_dealer = next((i for i, p in enumerate(players) if p.is_dealer), 0)
+        new_dealer = (prev_dealer + 1) % n
+        for i, p in enumerate(players):
+            p.hand = []
+            p.shown_sequences = []
+            p.turn_count = 0
+            p.is_dealer = (i == new_dealer)
+            p.save(update_fields=['hand', 'shown_sequences', 'turn_count', 'is_dealer'])
+
+        self.maal_card = None
+        self.visibles = []
+        self.is_active = True
+        self.round_number = (self.round_number or 1) + 1
+        self.turn_player_index = new_dealer
+        self.initialize_deck()  # reshuffles + saves
+        self.deal_cards()       # deals 21 each, sets choice card, PLAYING/PICK, saves
 
 class Player(models.Model):
     PLAYER_TYPES = [
