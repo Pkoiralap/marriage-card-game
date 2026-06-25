@@ -92,3 +92,22 @@ relays messages between agents when an entry below requests it.
     `index.html` (block after `#sequence-controls`), `style.css` (appended),
     `tests.py`. Only overlap risk with F1 is the DISPATCH dict tail and the
     shared `emotes.py` (F1 fills `GESTURES`, F2 fills `CHAT_PHRASES` — disjoint).
+- (QA F2 Chat) Reviewed `feat/chat`; one real bug fixed, hardened, tests added.
+  - **[HIGH] XSS in chat log** (`GameController.appendChatLog`): built the entry
+    with `innerHTML` interpolating `player_name`. Player names are user-chosen and
+    only `.strip()`ed server-side (no HTML escaping — see `views._normalize_seats`),
+    so a player named `<img src=x onerror=...>` would execute JS for every other
+    player on each quick-chat. **Fixed**: rebuilt the entry with `createElement` +
+    `textContent` / `createTextNode` (no innerHTML). The 3D bubble path
+    (`Avatar.setLabel`, canvas texture) was already injection-safe.
+  - **Verified, no bug**: server allowlists ids (`broadcast_chat` → `emotes.chat_phrase`,
+    returns False / no broadcast for unknown ids); `getSlotForPlayer` correctly
+    mirrors `getOpponentAvatarSeeds` seat math (self → -1, no self-bubble);
+    per-slot bubble timers prevent overlap on rapid chats; chat log capped at 30;
+    `handleChat` exceptions can't freeze the FIFO queue (`processQueues` try/catch
+    recovers); client `CHAT_PHRASES` mirror ids match Python exactly.
+  - **Tests added** (now 62 green): `test_client_mirror_ids_match_python`
+    (drift guard parsing the JS mirror), `test_malformed_phrase_id_is_ignored`
+    (None/''/0/[]/{} rejected, no crash), `test_paired_gesture_is_broadcast`.
+  - **For merge**: changes stay within chat scope, `// F2`/`# F2` marked. No
+    cross-feature action needed.

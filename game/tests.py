@@ -98,6 +98,24 @@ class ChatPhraseTests(unittest.TestCase):
         ids = [p['id'] for p in emotes.CHAT_PHRASES]
         self.assertEqual(len(ids), len(set(ids)))
 
+    def test_client_mirror_ids_match_python(self):
+        """The CHAT_PHRASES mirror in GameController.js must list the same ids
+        (drift here = quick-chat buttons that fail server validation)."""
+        import os
+        import re
+
+        js_path = os.path.join(
+            os.path.dirname(os.path.dirname(__file__)),
+            'static', 'js', 'game', 'GameController.js',
+        )
+        with open(js_path, encoding='utf-8') as fh:
+            src = fh.read()
+        # Grab the first `const CHAT_PHRASES = [ ... ];` block.
+        block = src.split('const CHAT_PHRASES = [', 1)[1].split('];', 1)[0]
+        js_ids = re.findall(r"id:\s*'([^']+)'", block)
+        py_ids = [p['id'] for p in emotes.CHAT_PHRASES]
+        self.assertEqual(js_ids, py_ids)
+
 
 class ChatBroadcastTests(unittest.TestCase):
     """broadcast_chat validates the id and only broadcasts allowed phrases."""
@@ -131,6 +149,21 @@ class ChatBroadcastTests(unittest.TestCase):
         result = self._run(c.broadcast_chat('Alice', 'bogus'))
         self.assertFalse(result)
         self.assertEqual(c.sent, [])
+
+    def test_malformed_phrase_id_is_ignored(self):
+        # None / empty / non-str ids must be rejected without crashing.
+        c = self._consumer()
+        for bad in (None, '', 0, [], {}):
+            self.assertFalse(self._run(c.broadcast_chat('Alice', bad)))
+        self.assertEqual(c.sent, [])
+
+    def test_paired_gesture_is_broadcast(self):
+        # A phrase with a paired gesture forwards it; one without sends None.
+        c = self._consumer()
+        self._run(c.broadcast_chat('Alice', 'gg'))      # has gesture 'wave'
+        self._run(c.broadcast_chat('Alice', 'yourturn'))  # no gesture
+        self.assertEqual(c.sent[0]['gesture'], 'wave')
+        self.assertIsNone(c.sent[1]['gesture'])
 
 
 class CreateGameViewTests(TestCase):

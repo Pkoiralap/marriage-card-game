@@ -441,7 +441,15 @@ export class GameController {
         const entry = document.createElement('div');
         entry.className = 'chat-entry';
         const who = playerName === (this.game.me && this.game.me.name) ? 'You' : playerName;
-        entry.innerHTML = `<span class="chat-author">${who}</span>${text}`;
+        // F2: build via textContent, never innerHTML. player_name is user-chosen
+        // and NOT server-sanitized, so interpolating it into innerHTML is an XSS
+        // sink (e.g. a player named "<img src=x onerror=...>" would execute for
+        // everyone else on every chat). text is allowlisted but still set safely.
+        const author = document.createElement('span');
+        author.className = 'chat-author';
+        author.textContent = who;
+        entry.appendChild(author);
+        entry.appendChild(document.createTextNode(text));
         panel.prepend(entry);
         while (panel.children.length > 30) panel.removeChild(panel.lastChild);
     }
