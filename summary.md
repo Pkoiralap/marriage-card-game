@@ -183,3 +183,27 @@ Current AI picks a random source and discards a random card — no strategy.
 - **Settings/variants**: configurable rules (number of decks, sequence length, scoring),
   avatar/name picker per player.
 - **Accessibility**: keyboard controls, colorblind-friendly suits, reduced-motion option.
+
+---
+
+## Build progress — multi-agent feature batches (delivered)
+
+All work below was built by parallel feature agents (isolated git worktrees), each
+QA'd by a dedicated agent, then merged to `master`. **152 tests pass; app boots.**
+
+### Batch 1 — requested features (merged)
+- **Gestures** — 11 networked emote animations + emote menu. *(QA fixed a stuck head-tilt.)*
+- **Chat** — 12 preloaded quick-chat phrases, speech bubbles + log + picker; `broadcast_chat` reusable by AI. *(QA fixed a stored XSS in the chat log.)*
+- **AI** — rules-engine pick/discard, shows melds/maal, claims, difficulty levels; AI also emotes (win celebration + quips). *(QA fixed two HIGH bugs: AI could never win; empty-deck stall.)*
+- **UI modernization** — design tokens, modern dark theme, toasts (`window.toast`), turn indicator, win/lose banner, responsive/safe-area.
+
+### Batch 2 — suggested features (merged)
+- **Game loop + scoring** — real `claim_game` via `rules.is_winning_claim`; low-score-wins scoring (`Player.points`), standings payload; multi-round / play-again. *(QA fixed a re-deal race.)*
+- **Maal/joker rules** — `rules/jokers.py` derives tiplu + poplu/jhiplu/alternate; dirty sequences accepted after maal; AI and show-validator now agree on jokers.
+- **Turn timer / AFK** — 30s per-turn deadline with server auto-act; countdown UI. *(QA fixed a HIGH refresh-storm loop and a double-act bug.)*
+- **Production hardening** — env `DEBUG`/`SECRET_KEY`/`ALLOWED_HOSTS`; WhiteNoise static (also fixes the dev cache gap); WS rate-limit; **debug HUD removed**.
+
+### Still open (next candidates)
+- Joiner-chosen display name on seat claim (rejoin is name-only today).
+- Reconnect identity/security token (anyone who knows a name can take a vacated seat).
+- Spectator mode; sound/haptics; channels integration tests; accessibility (keyboard, colorblind suits, reduced-motion).
