@@ -1,6 +1,184 @@
 import random
 from abc import ABC, abstractmethod
 
+# F3: the AI reasons about cards using the pure rules engine rather than chance.
+from .rules import (
+    Card,
+    is_sequence,
+    is_tunnela,
+    is_dublee,
+    find_meld_partition,
+    is_winning_hand,
+    unmelded_points,
+)
+
+
+# F3: ---------------------------------------------------------------------
+# Pure, framework-free AI decision helpers. They take plain card dicts (the
+# DB/wire format) plus an optional joker-id set and return a decision. No
+# Django, no I/O -> fully unit-testable. The AIPlayer below is a thin shell
+# that wires these into the game models.
+# -------------------------------------------------------------------------
+
+def jokers_from_maal(hand, maal_card):
+    """Card ids in ``hand`` that act as wild (jokers).
+
+    In Marriage the maal/tiplu *face* is wild. The rules engine identifies
+    jokers by card id, so we translate: every physical copy in hand whose
+    suit+rank matches the maal face is a joker id. Returns an empty set when
+    no maal has been revealed yet.
+    """
+    if not maal_card:
+        return set()
+    suit, number = maal_card.get('suit'), maal_card.get('number')
+    return {
+        c['id'] for c in hand
+        if c.get('suit') == suit and c.get('number') == number and c.get('id') is not None
+    }
+
+
+def _hand_cards(hand):
+    return [Card.from_dict(c) for c in hand]
+
+
+def _meld_connections(hand, jokers=None):
+    """For each card index, how many *other* cards it pairs with toward a meld.
+
+    A higher score means the card is more entangled in potential melds (part of
+    a pair, a run neighbour, or a sequence with the same suit). Cards with a
+    score of 0 are 'dead' and the safest to discard. This is a cheap heuristic,
+    not a full partition search.
+    """
+    jokers = jokers or set()
+    cards = _hand_cards(hand)
+    scores = [0] * len(cards)
+    for i, a in enumerate(cards):
+        if a.id in jokers:
+            scores[i] = 99  # jokers are always worth keeping
+            continue
+        for j, b in enumerate(cards):
+            if i == j:
+                continue
+            if a.same_face(b):
+                scores[i] += 2  # pair / triple toward dublee / tunnela / book
+            elif a.suit == b.suit and abs(a.rank_value - b.rank_value) <= 2:
+                scores[i] += 1  # same-suit neighbour toward a sequence
+    return scores
+
+
+def choose_discard(hand, jokers=None):
+    """Index of the card to discard: the one contributing least to any meld.
+
+    Strategy: prefer to throw a card that is (a) not in a meld connection and
+    (b) carries the most penalty points if left over. Ties broken by highest
+    `unmelded_points` of the single card. Pure: depends only on its inputs.
+    """
+    if not hand:
+        return None
+    jokers = jokers or set()
+    connections = _meld_connections(hand, jokers)
+
+    def penalty(i):
+        # Standalone penalty for keeping this exact card around.
+        return unmelded_points([hand[i]], jokers)
+
+    # Sort by (fewest connections, then most penalty points) -> first is discard.
+    order = sorted(range(len(hand)), key=lambda i: (connections[i], -penalty(i)))
+    return order[0]
+
+
+def should_pick_choice(hand, choice_card, jokers=None):
+    """True if drawing the visible ``choice_card`` improves the hand.
+
+    Picking from the choice pile is only worth it when the card extends a
+    potential meld: it forms/extends a sequence, makes a pair (dublee/tunnela),
+    or is itself a joker. Otherwise the AI prefers the (hidden) deck so it does
+    not telegraph its plans by grabbing a useless visible card.
+    """
+    if not choice_card:
+        return False
+    jokers = jokers or set()
+    cand = Card.from_dict(choice_card)
+    if choice_card.get('id') in jokers:
+        return True
+
+    cards = _hand_cards(hand)
+    same_suit = sorted({c.rank_value for c in cards if c.suit == cand.suit})
+
+    # Pair / book toward a dublee or tunnela.
+    if any(c.same_face(cand) for c in cards):
+        return True
+    # Sequence neighbour: a same-suit card within 2 ranks can complete a run.
+    if any(abs(rv - cand.rank_value) <= 2 for rv in same_suit):
+        return True
+    return False
+
+
+def is_winning(hand, jokers=None):
+    """Thin wrapper so the consumer/AI can ask 'can I claim?' without imports."""
+    return is_winning_hand(hand, jokers or set())
+
+
+def find_showable_sequences(hand, jokers=None, limit=3):
+    """Up to ``limit`` disjoint groups of card indices that form sequences.
+
+    Used by the AI driver to 'show' melds. Greedily extracts sequences from a
+    full meld partition (preferring pure runs first), returning each group as a
+    list of indices into the original ``hand`` so the consumer can register
+    them by index. Returns [] when no clean partition exists.
+    """
+    jokers = jokers or set()
+    partition = find_meld_partition(hand, jokers)
+    if not partition:
+        return []
+
+    # Map each Card object back to a hand index (by id, falling back to face).
+    used = set()
+    groups = []
+    for group in partition:
+        if not is_sequence(group, jokers):
+            continue  # only sequences are showable (tunnela handled separately)
+        indices = []
+        for card in group:
+            for i, h in enumerate(hand):
+                if i in used:
+                    continue
+                if h.get('id') == card.id:
+                    indices.append(i)
+                    used.add(i)
+                    break
+        if len(indices) == len(group):
+            groups.append(indices)
+        if len(groups) >= limit:
+            break
+    return groups
+
+
+def find_showable_tunnelas(hand, limit=1):
+    """Index groups for tunnelas (3 identical cards) the AI can show round 1."""
+    groups = []
+    used = set()
+    n = len(hand)
+    for i in range(n):
+        if i in used:
+            continue
+        matches = [i]
+        for j in range(i + 1, n):
+            if j in used:
+                continue
+            if (hand[j].get('suit') == hand[i].get('suit')
+                    and hand[j].get('number') == hand[i].get('number')):
+                matches.append(j)
+            if len(matches) == 3:
+                break
+        if len(matches) == 3:
+            groups.append(matches)
+            used.update(matches)
+        if len(groups) >= limit:
+            break
+    return groups
+
+
 class BasePlayer(ABC):
     def __init__(self, player_model):
         self.player_model = player_model
@@ -8,7 +186,7 @@ class BasePlayer(ABC):
 
     def process_turn(self, **kwargs):
         """
-        Main entry point for a player's turn. 
+        Main entry point for a player's turn.
         Returns (True, card, action_details) if turn step is complete, (False, None, None) otherwise.
         """
         if self.game_model.turn_step == 'PICK':
@@ -19,20 +197,20 @@ class BasePlayer(ABC):
                 self.show_sequence_or_dublee()
                 self.save()
                 return True, card, source
-        
+
         elif self.game_model.turn_step == 'DISCARD':
             success, card = self.handle_discard(**kwargs)
             if success:
                 # Turn is complete, move to next player (ANTI-CLOCKWISE)
                 self.game_model.turn_step = 'PICK'
                 self.game_model.turn_player_index = (self.game_model.turn_player_index - 1) % self.game_model.num_players
-                
+
                 if self.check_game_end():
                     self.claim_game()
-                
+
                 self.save()
                 return True, card, None
-        
+
         return False, None, None
 
     @abstractmethod
@@ -67,13 +245,13 @@ class HumanPlayer(BasePlayer):
     def handle_pick(self, source=None, target_index=None, **kwargs):
         if not source:
             return False, None, None
-            
+
         card = None
         if source == 'deck' and self.game_model.deck:
             card = self.game_model.deck.pop()
         elif source == 'choice' and self.game_model.visibles:
             card = self.game_model.visibles.pop()
-        
+
         if card:
             if target_index is not None and 0 <= target_index <= len(self.player_model.hand):
                 self.player_model.hand.insert(target_index, card)
@@ -85,7 +263,7 @@ class HumanPlayer(BasePlayer):
     def handle_discard(self, card_index=None, **kwargs):
         if card_index is None:
             return False, None
-            
+
         if 0 <= card_index < len(self.player_model.hand):
             card = self.player_model.hand.pop(card_index)
             self.game_model.visibles.append(card)
@@ -93,14 +271,32 @@ class HumanPlayer(BasePlayer):
         return False, None
 
 class AIPlayer(BasePlayer):
+    # F3: difficulty knob. 'easy' keeps the old random behaviour, 'normal'
+    # (default) uses the greedy rules-engine heuristics, 'hard' adds a light
+    # one-card lookahead when choosing what to discard.
+    def __init__(self, player_model, difficulty='normal'):
+        super().__init__(player_model)
+        self.difficulty = getattr(player_model, 'ai_difficulty', None) or difficulty
+
+    # F3: jokers (wild card ids) derived from the table's maal face.
+    def _jokers(self):
+        return jokers_from_maal(self.player_model.hand, self.game_model.maal_card)
+
     def handle_pick(self, **kwargs):
         source = kwargs.get('source')
         if not source:
-            # Random pick logic
-            source = 'deck'
-            if self.game_model.visibles and random.random() > 0.5:
-                source = 'choice'
-        
+            if self.difficulty == 'easy':
+                # Legacy random pick.
+                source = 'choice' if (self.game_model.visibles and random.random() > 0.5) else 'deck'
+            else:
+                # F3: take the visible card only when it helps build a meld.
+                choice_card = self.game_model.visibles[-1] if self.game_model.visibles else None
+                # Include the choice card when deriving jokers so a wild choice
+                # card (matching the maal face) is recognised as worth picking.
+                probe = self.player_model.hand + ([choice_card] if choice_card else [])
+                jokers = jokers_from_maal(probe, self.game_model.maal_card)
+                source = 'choice' if should_pick_choice(self.player_model.hand, choice_card, jokers) else 'deck'
+
         card = None
         if source == 'choice' and self.game_model.visibles:
             card = self.game_model.visibles.pop()
@@ -115,10 +311,39 @@ class AIPlayer(BasePlayer):
         return False, None, None
 
     def handle_discard(self, **kwargs):
-        if self.player_model.hand:
-            # Discard random card
+        if not self.player_model.hand:
+            return False, None
+
+        if self.difficulty == 'easy':
             idx = random.randint(0, len(self.player_model.hand) - 1)
-            card = self.player_model.hand.pop(idx)
-            self.game_model.visibles.append(card)
-            return True, card
-        return False, None
+        else:
+            jokers = self._jokers()
+            if self.difficulty == 'hard':
+                idx = self._discard_with_lookahead(jokers)
+            else:
+                idx = choose_discard(self.player_model.hand, jokers)
+
+        card = self.player_model.hand.pop(idx)
+        self.game_model.visibles.append(card)
+        return True, card
+
+    # F3: 'hard' lookahead — try discarding each candidate and keep the one
+    # that leaves the lowest unmelded-point hand. Bounded to the cheapest few
+    # candidates from the greedy heuristic so it stays fast.
+    def _discard_with_lookahead(self, jokers):
+        hand = self.player_model.hand
+        connections = _meld_connections(hand, jokers)
+        # Evaluate the 5 least-connected candidates only.
+        candidates = sorted(range(len(hand)), key=lambda i: connections[i])[:5]
+        best_idx, best_score = candidates[0], None
+        for i in candidates:
+            remaining = hand[:i] + hand[i + 1:]
+            score = unmelded_points(remaining, jokers)
+            if best_score is None or score < best_score:
+                best_idx, best_score = i, score
+        return best_idx
+
+    def check_game_end(self):
+        # F3: a real win check via the rules engine (1 card will be discarded,
+        # so a winning hand is the remaining cards forming complete melds).
+        return is_winning(self.player_model.hand, self._jokers())

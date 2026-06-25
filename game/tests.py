@@ -15,6 +15,14 @@ from types import SimpleNamespace
 from django.test import Client, TestCase
 
 from game.consumers import GameConsumer, TurnContext
+from game.logic import (
+    choose_discard,
+    find_showable_sequences,
+    find_showable_tunnelas,
+    is_winning,
+    jokers_from_maal,
+    should_pick_choice,
+)
 from game.models import CODE_ALPHABET, Game, Player
 
 
@@ -234,6 +242,187 @@ class ClaimSeatTests(TestCase):
             ("HUMAN", "Player 4", False, False),  # truly open
         ])
         self.assertEqual(game.open_human_seat_names(), ["Player 4"])
+
+
+# F3: AI decision-helper tests. Pure (no DB) — they exercise the rules-engine
+# backed heuristics that drive the smart AI.
+def _card(suit, number, id):
+    return {"suit": suit, "number": number, "id": id}
+
+
+class AIDiscardTests(unittest.TestCase):
+    def test_discards_dead_card_over_meld_card(self):
+        # 4-5-6 of spades are entangled (sequence); the K of hearts is dead.
+        hand = [
+            _card("SPADE", "4", 1),
+            _card("SPADE", "5", 2),
+            _card("SPADE", "6", 3),
+            _card("HEART", "K", 4),
+        ]
+        idx = choose_discard(hand)
+        self.assertEqual(hand[idx]["id"], 4)
+
+    def test_keeps_pair_discards_loner(self):
+        # A pair of 9s connects; the lone 2 of clubs does not.
+        hand = [
+            _card("DIAMOND", "9", 1),
+            _card("DIAMOND", "9", 2),
+            _card("CLUB", "2", 3),
+        ]
+        idx = choose_discard(hand)
+        self.assertEqual(hand[idx]["id"], 3)
+
+    def test_empty_hand_returns_none(self):
+        self.assertIsNone(choose_discard([]))
+
+    def test_jokers_are_never_discarded(self):
+        maal = _card("HEART", "7", 99)
+        hand = [
+            _card("HEART", "7", 10),  # this is a joker (matches maal face)
+            _card("CLUB", "2", 11),   # dead card
+            _card("CLUB", "K", 12),   # dead, high points
+        ]
+        jokers = jokers_from_maal(hand, maal)
+        idx = choose_discard(hand, jokers)
+        self.assertNotEqual(hand[idx]["id"], 10)
+
+
+class AIPickTests(unittest.TestCase):
+    def test_picks_choice_that_extends_sequence(self):
+        hand = [_card("SPADE", "4", 1), _card("SPADE", "5", 2)]
+        choice = _card("SPADE", "6", 3)  # completes 4-5-6
+        self.assertTrue(should_pick_choice(hand, choice))
+
+    def test_picks_choice_that_makes_pair(self):
+        hand = [_card("CLUB", "9", 1)]
+        self.assertTrue(should_pick_choice(hand, _card("CLUB", "9", 2)))
+
+    def test_skips_useless_choice(self):
+        hand = [_card("SPADE", "4", 1), _card("HEART", "K", 2)]
+        self.assertFalse(should_pick_choice(hand, _card("DIAMOND", "8", 3)))
+
+    def test_picks_joker_choice(self):
+        maal = _card("HEART", "7", 99)
+        hand = [_card("SPADE", "4", 1)]
+        choice = _card("HEART", "7", 5)  # a joker face
+        jokers = jokers_from_maal(hand + [choice], maal)
+        self.assertTrue(should_pick_choice(hand, choice, jokers))
+
+    def test_no_choice_card(self):
+        self.assertFalse(should_pick_choice([_card("SPADE", "4", 1)], None))
+
+
+class AIShowAndWinTests(unittest.TestCase):
+    def test_recognises_winning_hand(self):
+        hand = [
+            _card("SPADE", "4", 1), _card("SPADE", "5", 2), _card("SPADE", "6", 3),
+            _card("HEART", "9", 4), _card("HEART", "10", 5), _card("HEART", "J", 6),
+        ]
+        self.assertTrue(is_winning(hand))
+
+    def test_non_winning_hand(self):
+        hand = [
+            _card("SPADE", "4", 1), _card("SPADE", "5", 2), _card("CLUB", "K", 3),
+        ]
+        self.assertFalse(is_winning(hand))
+
+    def test_finds_showable_sequences(self):
+        hand = [
+            _card("SPADE", "4", 1), _card("SPADE", "5", 2), _card("SPADE", "6", 3),
+            _card("HEART", "9", 4), _card("HEART", "10", 5), _card("HEART", "J", 6),
+        ]
+        groups = find_showable_sequences(hand, limit=3)
+        self.assertEqual(len(groups), 2)
+        # Groups are disjoint index sets that each form a sequence.
+        flat = [i for g in groups for i in g]
+        self.assertEqual(len(flat), len(set(flat)))
+
+    def test_no_sequences_when_none_present(self):
+        hand = [_card("SPADE", "4", 1), _card("HEART", "K", 2), _card("CLUB", "2", 3)]
+        self.assertEqual(find_showable_sequences(hand), [])
+
+    def test_finds_tunnela(self):
+        hand = [
+            _card("HEART", "7", 1), _card("HEART", "7", 2), _card("HEART", "7", 3),
+            _card("CLUB", "2", 4),
+        ]
+        groups = find_showable_tunnelas(hand)
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(sorted(groups[0]), [0, 1, 2])
+
+    def test_no_tunnela_for_mixed_suit(self):
+        hand = [
+            _card("HEART", "7", 1), _card("DIAMOND", "7", 2), _card("HEART", "7", 3),
+        ]
+        self.assertEqual(find_showable_tunnelas(hand), [])
+
+
+class AIPlayerTurnTests(TestCase):
+    """End-to-end AIPlayer pick+discard through the model layer (no channels)."""
+
+    def _game_with_ai(self, hand, deck, visibles, maal=None):
+        game = Game.objects.create(
+            num_players=1, code=Game.generate_code(), deck=deck, visibles=visibles,
+            turn_step='PICK', maal_card=maal)
+        player = Player.objects.create(name="AI_1", game=game, player_type='AI', hand=hand)
+        return game, player
+
+    def test_ai_picks_useful_choice_then_discards_dead(self):
+        from game.logic import AIPlayer
+        hand = [
+            _card("SPADE", "4", 1), _card("SPADE", "5", 2), _card("HEART", "K", 3),
+        ]
+        game, player = self._game_with_ai(
+            hand=list(hand), deck=[_card("CLUB", "2", 9)], visibles=[_card("SPADE", "6", 4)])
+
+        ai = AIPlayer(player)
+        ok, card, source = ai.process_turn()  # PICK step
+        self.assertTrue(ok)
+        # The 6S completes a sequence, so the AI should grab it from the choice.
+        self.assertEqual(source, 'choice')
+        self.assertEqual(card['id'], 4)
+
+        player.refresh_from_db()
+        game.refresh_from_db()
+        ai2 = AIPlayer(player)
+        ok2, discarded = ai2.handle_discard()
+        self.assertTrue(ok2)
+        # It keeps the 4-5-6 spade run and dumps the dead K of hearts.
+        self.assertEqual(discarded['id'], 3)
+
+    def test_ai_skips_useless_choice_and_draws_deck(self):
+        from game.logic import AIPlayer
+        game, player = self._game_with_ai(
+            hand=[_card("SPADE", "4", 1), _card("HEART", "K", 2)],
+            deck=[_card("CLUB", "3", 9)],
+            visibles=[_card("DIAMOND", "8", 4)])  # useless choice
+        ai = AIPlayer(player)
+        ok, card, source = ai.process_turn()
+        self.assertTrue(ok)
+        self.assertEqual(source, 'deck')
+
+    def test_ai_check_game_end_on_winning_hand(self):
+        from game.logic import AIPlayer
+        winning = [
+            _card("SPADE", "4", 1), _card("SPADE", "5", 2), _card("SPADE", "6", 3),
+            _card("HEART", "9", 4), _card("HEART", "10", 5), _card("HEART", "J", 6),
+        ]
+        game, player = self._game_with_ai(hand=winning, deck=[], visibles=[])
+        ai = AIPlayer(player)
+        self.assertTrue(ai.check_game_end())
+
+
+class JokersFromMaalTests(unittest.TestCase):
+    def test_no_maal_no_jokers(self):
+        hand = [_card("SPADE", "4", 1)]
+        self.assertEqual(jokers_from_maal(hand, None), set())
+
+    def test_matches_maal_face(self):
+        maal = _card("HEART", "7", 99)
+        hand = [
+            _card("HEART", "7", 1), _card("HEART", "7", 2), _card("SPADE", "7", 3),
+        ]
+        self.assertEqual(jokers_from_maal(hand, maal), {1, 2})
 
 
 if __name__ == "__main__":

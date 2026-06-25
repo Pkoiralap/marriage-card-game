@@ -61,3 +61,36 @@ relays messages between agents when an entry below requests it.
 
 ## Log (append entries; newest at bottom)
 - (orchestrator) Baseline at master `0054b09`. Branches not yet created.
+- (F3 AI) `feat/ai`. Replaced the random AI with a rules-engine strategy.
+  - **`game/logic.py`**: added pure, unit-tested helpers — `jokers_from_maal`
+    (maal face -> wild card ids), `choose_discard` (dumps the least-connected /
+    highest-penalty card via `unmelded_points` + a meld-connection heuristic),
+    `should_pick_choice` (take the visible card only when it extends a
+    sequence/pair or is a joker, else draw deck), `is_winning` (wrapper over
+    `is_winning_hand`), `find_showable_sequences` / `find_showable_tunnelas`
+    (index groups the driver can register). `AIPlayer` now wires these in and
+    has a `difficulty` knob: `easy` = old random, `normal` = greedy (default),
+    `hard` = `normal` + a bounded 1-card discard lookahead. `check_game_end`
+    now uses the rules engine. Reads optional `player_model.ai_difficulty`.
+  - **`consumers.py`** (additive, all `# F3`): `handle_ai_turns` now passes
+    `source=None` so the AIPlayer decides its own pick source, then calls a new
+    `_ai_show_and_claim` between pick and discard. That helper reuses the
+    existing human flows — `register_tunnela` (first round), `register_sequence`
+    (until 3 shown), `select_maal` (picks the deck face the AI holds most of),
+    and an `_ai_claim` guarded by `is_winning`. One code path / one set of
+    broadcasts; it's a no-op when the AI has nothing to show.
+  - **Tests**: +20 in `game/tests.py` (53 -> 73, all green). Pure helpers
+    (discard/pick/win/tunnela/sequence/jokers) plus 3 DB-backed `AIPlayer`
+    turn tests.
+  - **Hooks for F1/F2**: clean, commented no-op hook in `_ai_show_and_claim`
+    where the AI could emit a gesture on claim / a chat quip on showing — feature
+    -detected (`hasattr`), so no hard dependency on `feat/gestures`/`feat/chat`.
+  - **Remaining / risks**: maal-as-joker is interpreted as "every hand copy of
+    the maal face is wild" (engine takes ids, table decides faces); adjust if the
+    house rule differs (e.g. alter/poplu relatives also wild). The human
+    `claim_game` handler still uses the client "1 card left" rule (untouched).
+    **Merge overlap = `consumers.py`**: I rewrote the pick-source line and the
+    pick/discard block inside `handle_ai_turns`, and added the import block +
+    `_ai_show_and_claim`/`_ai_select_maal`/`_ai_claim` methods. F1/F2 add DISPATCH
+    entries + handler methods elsewhere in the class, so conflicts should be
+    localized to the import area and the AI loop body.
