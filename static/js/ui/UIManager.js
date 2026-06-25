@@ -90,6 +90,20 @@ export class UIManager {
             }
         });
 
+        // F1: emote menu. Toggle opens the grid; each gesture button fires the
+        // onGesture callback (wired to SocketManager.sendGesture) and closes it.
+        const emoteControls = document.getElementById('emote-controls');
+        document.getElementById('emote-toggle')?.addEventListener('click', () => {
+            if (emoteControls) emoteControls.classList.toggle('emote-open');
+        });
+        document.querySelectorAll('.emote-btn').forEach((btn) => {
+            btn.addEventListener('click', () => {
+                const gesture = btn.dataset.gesture;
+                if (gesture && this.callbacks.onGesture) this.callbacks.onGesture(gesture);
+                if (emoteControls) emoteControls.classList.remove('emote-open');
+            });
+        });
+
         window.onclick = (event) => {
             if (event.target == this.createModal) this.createModal.style.display = "none";
             if (event.target == this.joinModal) this.joinModal.style.display = "none";

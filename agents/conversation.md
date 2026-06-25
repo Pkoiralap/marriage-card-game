@@ -61,3 +61,31 @@ relays messages between agents when an entry below requests it.
 
 ## Log (append entries; newest at bottom)
 - (orchestrator) Baseline at master `0054b09`. Branches not yet created.
+- (F1 Gestures, branch `feat/gestures`) Done.
+  - **Gestures implemented** (11) in `Avatar._applyGesture` + `playGesture` duration
+    table: `wave, nod, shake, jump, celebrate, cry, think, point, clap, facepalm,
+    shrug`. `game/emotes.py` `GESTURES` matches exactly (validated by a new test).
+  - **Message shape**: client → `{type:'gesture', player_name, gesture}` via
+    `SocketManager.sendGesture(gesture)`. Server handler `GameConsumer.gesture`
+    validates with `emotes.is_valid_gesture` and broadcasts action
+    `{type:'GESTURE', player_name, gesture}` via new helper
+    `_broadcast_action_only` (no state refresh — gestures are cosmetic). DISPATCH
+    entry `'gesture'` added at the end (`# F1`).
+  - **Client routing**: `GameController.handleAction` handles `GESTURE` early
+    (returns before any card animation). New helper `getAvatarSlotForPlayer(name)`
+    is the inverse of `getOpponentAvatarSeeds`' seat→slot map; calls
+    `renderer.triggerGesture(slot, gesture)`. Self gesture: broadcast only, no
+    avatar to animate.
+  - **UI ids/classes**: `#emote-controls`, `#emote-toggle`, `#emote-menu`,
+    `.emote-btn` (+ `.emote-open` open-state class on `#emote-controls`). Wired
+    through `UIManager` (new `onGesture` callback in `GameController`).
+  - **Styling**: uses F4 tokens `var(--surface)`, `var(--surface-2)`,
+    `var(--accent)`, `var(--accent-2)`, `var(--radius)`, `var(--shadow)`,
+    `var(--text)` with baseline fallbacks so it looks right pre- and post-merge.
+  - **Tests**: +5 (`GestureTests`) — allowlist sync, `is_valid_gesture`, dispatch
+    wiring, handler broadcasts valid / ignores invalid. 58 total, green.
+  - **Cross-feature notes**: F3 (AI) can call `consumer.gesture(name, gesture)` or
+    send a `gesture` message to trigger AI emotes — handler is reusable. F4 must
+    define the listed tokens on `:root` (already in the contract). Shared-file
+    edits all marked `# F1`/`// F1`; the one non-additive change is adding
+    `'gesture'` to the expected set in `DispatchTests.test_known_message_types_covered`.

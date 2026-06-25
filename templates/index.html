@@ -84,6 +84,25 @@
             <button id="validate-seq-btn" class="btn btn-secondary btn-sm">Validate Sequence</button>
             <button id="cancel-sequence-btn" class="btn btn-cancel btn-sm">Cancel</button>
         </div>
+
+        <!-- F1: in-game emote menu. Toggle button opens a grid of gesture
+             buttons; each sends a networked gesture via UIManager -> SocketManager. -->
+        <div id="emote-controls">
+            <div id="emote-menu">
+                <button class="emote-btn" data-gesture="wave"      title="Wave">👋</button>
+                <button class="emote-btn" data-gesture="nod"       title="Nod (yes)">🙆</button>
+                <button class="emote-btn" data-gesture="shake"     title="Shake (no)">🙅</button>
+                <button class="emote-btn" data-gesture="jump"      title="Jump">⤴️</button>
+                <button class="emote-btn" data-gesture="celebrate" title="Celebrate">🎉</button>
+                <button class="emote-btn" data-gesture="cry"       title="Cry">😭</button>
+                <button class="emote-btn" data-gesture="think"     title="Think">🤔</button>
+                <button class="emote-btn" data-gesture="point"     title="Point">👉</button>
+                <button class="emote-btn" data-gesture="clap"      title="Clap">👏</button>
+                <button class="emote-btn" data-gesture="facepalm"  title="Facepalm">🤦</button>
+                <button class="emote-btn" data-gesture="shrug"     title="Shrug">🤷</button>
+            </div>
+            <button id="emote-toggle" class="btn btn-secondary btn-sm" title="Emotes">😀</button>
+        </div>
     </div>
 
     <!-- Maal Selection Modal -->

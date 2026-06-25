@@ -72,8 +72,55 @@ class DispatchTests(unittest.TestCase):
             'get_game_state', 'pick_card', 'discard_card', 'register_sequence',
             'register_tunnela', 'register_dublee', 'select_maal', 'cancel_sequence',
             'reorder_hand', 'claim_game',
+            'gesture',  # F1
         }
         self.assertEqual(set(GameConsumer.DISPATCH), expected)
+
+
+# F1: gesture allowlist + dispatch/broadcast behaviour.
+class GestureTests(unittest.TestCase):
+    def test_allowlist_matches_implemented_gestures(self):
+        from game import emotes
+        # These must stay in sync with Avatar._applyGesture (static/js).
+        expected = {
+            'wave', 'nod', 'shake', 'jump', 'celebrate',
+            'cry', 'think', 'point', 'clap', 'facepalm', 'shrug',
+        }
+        self.assertEqual(set(emotes.GESTURES), expected)
+
+    def test_is_valid_gesture(self):
+        from game import emotes
+        self.assertTrue(emotes.is_valid_gesture('wave'))
+        self.assertTrue(emotes.is_valid_gesture('shrug'))
+        self.assertFalse(emotes.is_valid_gesture('nope'))
+        self.assertFalse(emotes.is_valid_gesture(''))
+        self.assertFalse(emotes.is_valid_gesture(None))
+
+    def test_dispatch_wires_gesture_handler(self):
+        method_name, fields = GameConsumer.DISPATCH['gesture']
+        self.assertEqual(method_name, 'gesture')
+        self.assertEqual(fields, ('player_name', 'gesture'))
+        self.assertTrue(callable(getattr(GameConsumer, method_name, None)))
+
+    def test_handler_broadcasts_valid_gesture(self):
+        import asyncio
+        consumer = GameConsumer()
+        sent = []
+        consumer._broadcast_action_only = lambda action: _coro(sent.append(action))
+        asyncio.run(consumer.gesture('Alice', 'wave'))
+        self.assertEqual(sent, [{'type': 'GESTURE', 'player_name': 'Alice', 'gesture': 'wave'}])
+
+    def test_handler_ignores_invalid_gesture(self):
+        import asyncio
+        consumer = GameConsumer()
+        sent = []
+        consumer._broadcast_action_only = lambda action: _coro(sent.append(action))
+        asyncio.run(consumer.gesture('Alice', 'hack'))
+        self.assertEqual(sent, [])
+
+
+async def _coro(value=None):
+    return value
 
 
 class CreateGameViewTests(TestCase):

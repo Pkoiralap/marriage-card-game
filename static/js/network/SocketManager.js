@@ -73,6 +73,12 @@ export class SocketManager {
         this.send({ type: 'claim_game', player_name: this.playerName });
     }
 
+    // F1: send a cosmetic gesture/emote. Server validates against the GESTURES
+    // allowlist and broadcasts a GESTURE action to everyone.
+    sendGesture(gesture) {
+        this.send({ type: 'gesture', player_name: this.playerName, gesture: gesture });
+    }
+
     send(data) {
         if (this.socket && this.socket.readyState === WebSocket.OPEN) {
             this.socket.send(JSON.stringify({ 'message': JSON.stringify(data) }));

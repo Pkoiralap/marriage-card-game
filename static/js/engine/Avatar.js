@@ -236,7 +236,12 @@ export class Avatar {
     // --- public API --------------------------------------------------------
     // Trigger a one-shot emote. Hook point for future networked gestures.
     playGesture(name, duration) {
-        const durations = { wave: 2.0, nod: 1.2, shake: 1.2, jump: 0.9, celebrate: 1.6 };
+        // F1: full duration table for the networked gesture set. Each value is
+        // tuned so the animation reads clearly without dragging on.
+        const durations = {
+            wave: 2.0, nod: 1.2, shake: 1.2, jump: 0.9, celebrate: 1.8,
+            cry: 2.2, think: 2.0, point: 1.6, clap: 1.8, facepalm: 2.0, shrug: 1.6,
+        };
         this.gesture = name;
         this.gestureDur = duration || durations[name] || 1.2;
         this.gestureStart = this._t || 0;
@@ -299,26 +304,91 @@ export class Avatar {
     }
 
     _applyGesture(name, k, t, ph) {
+        // F1: each gesture drives the existing rig (armL/armR pivots rotate at the
+        // shoulder, headPivot for nods/looks, group for whole-body bob/lean, eyes
+        // for blink-like squashes). `ease` ramps 0->1->0 so poses ease in and out.
         const ease = Math.sin(Math.min(k, 1) * Math.PI);   // 0->1->0
         switch (name) {
             case 'wave':
+                // Right arm raised, hand oscillating side to side.
                 this.armR.rotation.z = -2.2 * ease;
                 this.armR.rotation.x = Math.sin(t * 14) * 0.5 * ease;
                 break;
             case 'nod':
+                // "Yes" — head pitches up/down a few times.
                 this.headPivot.rotation.x = Math.sin(t * 10) * 0.4 * ease;
                 break;
             case 'shake':
+                // "No" — head turns left/right.
                 this.headPivot.rotation.y = Math.sin(t * 12) * 0.5 * ease;
                 break;
             case 'jump':
+                // A single hop with a little arm lift.
                 this.group.position.y += Math.abs(Math.sin(k * Math.PI)) * 0.8;
+                this.armL.rotation.z = 0.5 * ease;
+                this.armR.rotation.z = -0.5 * ease;
                 break;
             case 'celebrate':
+                // Rapid little hops + both arms thrown up, head tilted back.
                 this.group.position.y += Math.abs(Math.sin(k * Math.PI * 3)) * 0.5;
                 this.armL.rotation.z = 1.8 * ease;
                 this.armR.rotation.z = -1.8 * ease;
+                this.headPivot.rotation.x = -0.2 * ease;
                 break;
+            case 'cry': {
+                // Both hands up to the face, body slumped, head bowed, shaking.
+                this.armL.rotation.x = -1.9 * ease;
+                this.armR.rotation.x = -1.9 * ease;
+                this.armL.rotation.z = 0.7 * ease;
+                this.armR.rotation.z = -0.7 * ease;
+                this.headPivot.rotation.x = 0.35 * ease;
+                this.group.position.y += Math.sin(t * 18) * 0.04 * ease;   // sob shudder
+                this.eyes.scale.y = 1 - 0.6 * ease;                         // squinted eyes
+                break;
+            }
+            case 'think': {
+                // One hand to the chin, head cocked, slow ponder sway.
+                this.armR.rotation.x = -2.0 * ease;
+                this.armR.rotation.z = -0.55 * ease;
+                this.headPivot.rotation.z = 0.25 * ease;
+                this.headPivot.rotation.y = Math.sin(t * 1.5) * 0.15 * ease;
+                break;
+            }
+            case 'point': {
+                // Right arm extended forward toward the table centre, held steady.
+                this.armR.rotation.x = -1.55 * ease;
+                this.armR.rotation.z = -0.15 * ease;
+                this.headPivot.rotation.x = -0.1 * ease;
+                break;
+            }
+            case 'clap': {
+                // Both arms forward, hands meeting and parting rhythmically.
+                const beat = (Math.sin(t * 16) * 0.5 + 0.5);   // 0..1 clap cycle
+                this.armL.rotation.x = -1.4 * ease;
+                this.armR.rotation.x = -1.4 * ease;
+                this.armL.rotation.z = (0.2 + beat * 0.5) * ease;
+                this.armR.rotation.z = -(0.2 + beat * 0.5) * ease;
+                break;
+            }
+            case 'facepalm': {
+                // One hand slaps onto the face, head drops into it.
+                const hit = Math.min(k * 3, 1);   // quick slap, then hold
+                this.armR.rotation.x = -2.0 * hit;
+                this.armR.rotation.z = -0.5 * hit;
+                this.headPivot.rotation.x = 0.4 * hit;
+                this.group.rotation.z += Math.sin(ph) * 0.02;
+                break;
+            }
+            case 'shrug': {
+                // Both arms swing out to the sides, palms up, head tilts — "dunno".
+                this.armL.rotation.z = 1.1 * ease;
+                this.armR.rotation.z = -1.1 * ease;
+                this.armL.rotation.x = -0.4 * ease;
+                this.armR.rotation.x = -0.4 * ease;
+                this.headPivot.rotation.z = 0.2 * ease;
+                this.group.position.y += 0.12 * ease;   // shoulders rise
+                break;
+            }
         }
     }
 
