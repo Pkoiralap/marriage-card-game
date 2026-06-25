@@ -10,6 +10,14 @@ from django.db import transaction
 
 from .models import Player, Game, GameAction
 from .logic import HumanPlayer, AIPlayer
+# F3: pure AI helpers for showing melds / claiming.
+from .logic import (
+    jokers_from_maal,
+    find_showable_sequences,
+    find_showable_tunnelas,
+    is_winning,
+    claim_discard_index,
+)
 from .rules import Card, is_sequence, is_tunnela, is_dublee
 
 logger = logging.getLogger(__name__)
@@ -301,17 +309,153 @@ class GameConsumer(AsyncWebsocketConsumer):
                 # glitching the animation.
                 await asyncio.sleep(1.2)
 
-                # 1. AI picks (random source, falling back to deck).
-                source = 'choice' if (ctx.game.visibles and random.random() > 0.5) else 'deck'
-                if await self._perform_pick(ctx.game, ctx.player, ctx.index, source, 'ai_pick'):
+                # F3: the AIPlayer now decides its own pick source from the
+                # rules engine (extend a meld -> choice, else deck). We pass
+                # source=None so handle_pick runs its strategy; it still falls
+                # back to deck when the choice pile is useless/empty.
+                if await self._perform_pick(ctx.game, ctx.player, ctx.index, None, 'ai_pick'):
                     await asyncio.sleep(1.5)  # let the pick animation play
+                else:
+                    # F3: loop-safety. A pick can only fail when the deck AND the
+                    # choice pile are both empty. In that case the AI cannot take
+                    # its turn, turn_step stays on PICK, and discard would fail
+                    # too — re-looping on the same seat forever. Stop the driver
+                    # instead of stalling; the game is wedged on an empty deck and
+                    # only a (human) reset can move it on.
+                    logger.warning("AI %s could not pick (deck+choice empty) in "
+                                   "room %s; stopping AI loop.", ctx.player.name, self.room_name)
+                    break
 
-                # 2. AI discards (re-fetch: pick advanced turn_step and the hand).
+                # F3: between pick and discard, try to show any melds the AI now
+                # holds, pick the maal when prompted, and claim if it has won.
+                # When it claims it also performs its own (winning) discard and
+                # returns True, so we stop here rather than discarding twice.
                 player = await sync_to_async(Player.objects.get)(id=ctx.player.id)
+                claimed = await self._ai_show_and_claim(ctx.game, player, ctx.index)
+                if claimed:
+                    break
+
+                # 2. AI discards (re-fetch: pick/show may have changed the hand).
+                player = await sync_to_async(Player.objects.get)(id=ctx.player.id)
+                # F3: defensive — if the game ended for any other reason, stop.
+                game_now = await sync_to_async(Game.objects.get)(code=self.room_name)
+                if not game_now.is_active:
+                    break
                 if await self._perform_discard(ctx.game, player, ctx.index, 'ai_discard'):
                     await asyncio.sleep(1.5)  # let the discard animation play
+                else:
+                    # F3: loop-safety. A successful pick leaves turn_step=DISCARD
+                    # with a non-empty hand, so discard should always succeed.
+                    # If it somehow doesn't, the turn never advances — break
+                    # rather than spin on the same seat forever.
+                    logger.warning("AI %s discard failed in room %s; stopping AI "
+                                   "loop to avoid a stall.", player.name, self.room_name)
+                    break
         except Exception:
             logger.exception("AI loop crashed in room %s", self.room_name)
+
+    # F3: -------------------------------------------------------------------
+    # AI meld-showing / maal-selection / claim driver. Reuses the same
+    # consumer flows a human triggers (register_sequence, register_tunnela,
+    # select_maal, claim_game) so there is one code path and one set of
+    # broadcasts. Everything here is additive and guarded so it's a no-op when
+    # the AI has nothing to show.
+    # -----------------------------------------------------------------------
+    async def _ai_show_and_claim(self, game, player, player_index):
+        # Re-fetch fresh game/player so we act on post-pick state.
+        game = await sync_to_async(Game.objects.get)(code=self.room_name)
+        player = await sync_to_async(Player.objects.get)(id=player.id)
+
+        jokers = jokers_from_maal(player.hand, game.maal_card)
+        already_shown = len([s for s in player.shown_sequences if s])
+
+        # First round only: a tunnela may be shown.
+        if player.turn_count == 0:
+            for grp in find_showable_tunnelas(player.hand):
+                await self.register_tunnela(player.name, grp)
+                await asyncio.sleep(0.6)
+
+        # Show sequences until the AI has three down (which unlocks maal).
+        if already_shown < 3:
+            seqs = find_showable_sequences(player.hand, jokers, limit=3 - already_shown)
+            for seq in seqs:
+                # Re-read indices each time: register_sequence keeps cards in the
+                # hand until all three are shown, so indices stay stable here.
+                player = await sync_to_async(Player.objects.get)(id=player.id)
+                await self.register_sequence(player.name, len(player.shown_sequences), seq)
+                await asyncio.sleep(0.6)
+
+        # If the AI just unlocked the maal and none is chosen, pick a good one.
+        player = await sync_to_async(Player.objects.get)(id=player.id)
+        game = await sync_to_async(Game.objects.get)(code=self.room_name)
+        if len([s for s in player.shown_sequences if s]) >= 3 and game.maal_card is None and game.deck:
+            await self._ai_select_maal(game, player)
+            await asyncio.sleep(0.6)
+
+        # Claim if discarding one card leaves a winning hand. NOTE: at this point
+        # the AI is holding its post-pick hand (one card more than a finished
+        # 21-card hand), so a bare is_winning() never fires — we must check
+        # whether *some* discard completes the win. Returns True when claimed so
+        # the driver skips the normal discard step.
+        player = await sync_to_async(Player.objects.get)(id=player.id)
+        game = await sync_to_async(Game.objects.get)(code=self.room_name)
+        claimed = await self._ai_claim(game, player)
+
+        # F3 hook (F1 gestures / F2 chat): once those branches land, this is the
+        # natural place for the AI to emote — e.g. emit a 'celebrate' gesture on
+        # a claim or a quip on showing all sequences. Intentionally a no-op now
+        # so we don't hard-depend on feature branches that aren't merged yet.
+        # Example (guarded so it's safe before F1/F2 exist):
+        #   if hasattr(self, 'send_gesture'):
+        #       await self.send_gesture(player.name, 'celebrate')
+        return claimed
+
+    async def _ai_select_maal(self, game, player):
+        """Pick the maal that maximises the AI's own wild cards.
+
+        Choosing a face the AI holds many copies of turns those copies into
+        jokers, which is the strongest pick available from the visible state.
+        """
+        deck = game.deck
+        if not deck:
+            return
+        hand_faces = {}
+        for c in player.hand:
+            hand_faces[(c['suit'], c['number'])] = hand_faces.get((c['suit'], c['number']), 0) + 1
+        # Prefer a deck card whose face the AI already holds; else just take one.
+        best = max(deck, key=lambda c: hand_faces.get((c['suit'], c['number']), 0))
+        await self.select_maal(player.name, best['id'])
+
+    async def _ai_claim(self, game, player):
+        """Claim the game iff some single discard leaves a winning hand.
+
+        The AI is mid-turn holding one extra card, so it must discard the
+        card whose removal completes the win, leaving the finished 21-card
+        hand on the table (mirroring the human "1 card left -> claim" rule).
+        Returns True when a claim was made (so the driver skips its own
+        discard), False otherwise.
+        """
+        jokers = jokers_from_maal(player.hand, game.maal_card)
+        discard_idx = claim_discard_index(player.hand, jokers)
+        if discard_idx is None:
+            return False
+
+        # Discard the winning card via the normal path so the board + the
+        # GameAction log stay consistent (turn also advances off this seat).
+        discarded = await self._perform_discard(
+            game, player, game.turn_player_index, 'ai_discard', card_index=discard_idx)
+        if discarded:
+            await asyncio.sleep(0.6)
+
+        game = await sync_to_async(Game.objects.get)(code=self.room_name)
+        game.is_active = False
+        await sync_to_async(game.save)()
+        await self.broadcast_action({
+            'type': 'GAME_CLAIMED',
+            'player_name': player.name,
+            'message': f"{player.name} has won the game!",
+        })
+        return True
 
     # --- broadcasting / state ----------------------------------------------
     async def send_reject(self, reject_type, reason):
