@@ -385,6 +385,7 @@ class GameConsumer(AsyncWebsocketConsumer):
                     break
                 if await self._perform_discard(ctx.game, player, ctx.index, 'ai_discard'):
                     await asyncio.sleep(1.5)  # let the discard animation play
+                    await self._ai_maybe_quip(player.name)  # occasional liveliness
                 else:
                     # F3: loop-safety. A successful pick leaves turn_step=DISCARD
                     # with a non-empty hand, so discard should always succeed.
@@ -492,12 +493,43 @@ class GameConsumer(AsyncWebsocketConsumer):
         game = await sync_to_async(Game.objects.get)(code=self.room_name)
         game.is_active = False
         await sync_to_async(game.save)()
+
+        # F3+F1+F2: the AI celebrates its win before the game-over banner (which
+        # makes clients reload), so the emote is actually seen.
+        await self._ai_emote(player.name, gesture='celebrate', phrase_id='iwin', pause=1.0)
+
         await self.broadcast_action({
             'type': 'GAME_CLAIMED',
             'player_name': player.name,
             'message': f"{player.name} has won the game!",
         })
         return True
+
+    async def _ai_maybe_quip(self, player_name):
+        """Occasionally play a subtle gesture / quick-chat so AIs feel alive.
+
+        Low-probability and cosmetic — only valid allowlisted ids are used."""
+        roll = random.random()
+        if roll < 0.12:
+            await self._ai_emote(player_name, gesture=random.choice(['think', 'nod', 'shrug', 'clap']))
+        if roll < 0.05:
+            await self._ai_emote(player_name, phrase_id=random.choice(['nice', 'gg', 'hurryup', 'hello']))
+
+    async def _ai_emote(self, player_name, gesture=None, phrase_id=None, pause=0.0):
+        """Make an AI play a gesture and/or quick-chat line (cosmetic, best-effort).
+
+        Reuses the F1 gesture handler and the F2 broadcast_chat helper so AI
+        emotes go through the exact same validated, networked path as humans.
+        """
+        try:
+            if gesture:
+                await self.gesture(player_name, gesture)
+            if phrase_id:
+                await self.broadcast_chat(player_name, phrase_id)
+            if pause:
+                await asyncio.sleep(pause)
+        except Exception:
+            logger.exception("AI emote failed for %s", player_name)
 
     # --- broadcasting / state ----------------------------------------------
     async def send_reject(self, reject_type, reason):
