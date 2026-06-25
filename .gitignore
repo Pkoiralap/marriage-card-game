@@ -10,3 +10,4 @@ venv
 # local/transient
 .gemini/
 state.png
+.claude/
