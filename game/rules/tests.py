@@ -242,6 +242,29 @@ class MaalJokerIdTests(unittest.TestCase):
         hand = [{"suit": "CLUB", "number": "3"}]  # no id
         self.assertEqual(maal_joker_ids(hand, maal), set())
 
+    def test_duplicate_faces_across_decks_all_map(self):
+        # S2: three physical decks -> the same wild face can appear multiple
+        # times; every copy's id must be flagged, not just the first.
+        maal = {"suit": "HEART", "number": "7"}
+        hand = [
+            {"suit": "HEART", "number": "7", "id": 1},    # tiplu copy A
+            {"suit": "HEART", "number": "7", "id": 2},    # tiplu copy B
+            {"suit": "DIAMOND", "number": "7", "id": 3},  # alt-tiplu copy A
+            {"suit": "DIAMOND", "number": "7", "id": 4},  # alt-tiplu copy B
+        ]
+        self.assertEqual(maal_joker_ids(hand, maal), {1, 2, 3, 4})
+
+    def test_mixed_dict_and_card_hand(self):
+        # S2: callers may pass a hand mixing wire dicts and Card objects
+        # (e.g. AI probes append a Card to a dict hand). Both must resolve.
+        maal = {"suit": "HEART", "number": "7"}
+        hand = [
+            {"suit": "HEART", "number": "8", "id": 10},   # poplu (dict)
+            Card(suit="HEART", rank="6", id=11),          # jhiplu (Card)
+            Card(suit="SPADE", rank="7", id=12),          # not wild (wrong colour)
+        ]
+        self.assertEqual(maal_joker_ids(hand, maal), {10, 11})
+
 
 class DirtySequenceWithMaalTests(unittest.TestCase):
     def test_pure_only_before_maal(self):

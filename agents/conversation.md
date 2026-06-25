@@ -375,3 +375,34 @@ relays messages between agents when an entry below requests it.
     lives in the new `jokers.py`). `rules/tests.py` and `game/tests.py` appended.
     `RegisterSequenceMaalTests` is a `TransactionTestCase` (sync_to_async +
     sqlite would deadlock under plain TestCase).
+
+## QA Log
+- (S2 QA, `feat/maal`) Reviewed `git diff origin/master...HEAD` and stress-tested
+  the maal/joker feature. **No real bugs found** — derivation, validator, and
+  parity are all correct. Verdict: ship.
+  - **Derivation correctness (verified for every rank + wraps):** tiplu=A ->
+    jhiplu wraps to K, poplu=2; tiplu=K -> poplu wraps to A, jhiplu=Q; 2/10/J/Q
+    all correct. Exactly 4 distinct wild faces. **Alternate** mapping is exactly
+    HEART<->DIAMOND, SPADE<->CLUB (same-colour partner, not suit-adjacent) for all
+    four suits.
+  - **`maal_joker_ids`:** correct for Card, wire/DB dict, None/empty/`{}`/`[]`
+    (-> empty = pure-only), id-less cards (skipped), and a mixed dict+Card hand.
+    Duplicate wild faces across the 3 decks ALL map to ids (not just the first).
+  - **Validator:** before maal -> joker set empty -> pure-only (joker-filled
+    "sequence" rejected); after maal -> right dirty sequences pass, genuinely
+    invalid ones still fail. Same-suit enforced on naturals; gap bounded by joker
+    count (jokers can't legalise a too-wide run); distinct-rank enforced; a joker
+    can't exceed its count. No tunnela/dublee regression (they ignore jokers via
+    `same_face`). Bad maal input (unknown suit/rank, garbage) degrades to empty
+    with no crash.
+  - **Parity (the stated F3 fix) confirmed:** human show (`consumers.register_sequence`),
+    AI show (`find_showable_sequences`), AI claim (`claim_discard_index`), and AI
+    win (`is_winning_hand`) all route through `jokers_from_maal` ->
+    `rules.maal_joker_ids`, called with the player's own hand + `game.maal_card`
+    (a JSONField card dict). Identical derivation -> cannot disagree.
+  - **Tests:** 114 -> **116** green. Added two `# S2` additive regression tests to
+    `game/rules/tests.py::MaalJokerIdTests`: `test_duplicate_faces_across_decks_all_map`
+    and `test_mixed_dict_and_card_hand` (locking down the two prompt-flagged cases
+    that weren't yet covered). No source changes — feature was already correct.
+  - **Merge notes:** unchanged from S2 entry. QA touched only `game/rules/tests.py`
+    (appended) + this log; no conflict surface added.
