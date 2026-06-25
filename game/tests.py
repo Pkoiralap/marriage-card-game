@@ -8,12 +8,14 @@ the app registry these handlers import):
     python manage.py test game
 """
 
+import asyncio
 import json
 import unittest
 from types import SimpleNamespace
 
 from django.test import Client, TestCase
 
+from game import emotes  # F2
 from game.consumers import GameConsumer, TurnContext
 from game.logic import (
     choose_discard,
@@ -82,6 +84,7 @@ class DispatchTests(unittest.TestCase):
             'register_tunnela', 'register_dublee', 'select_maal', 'cancel_sequence',
             'reorder_hand', 'claim_game',
             'gesture',  # F1
+            'chat',  # F2
         }
         self.assertEqual(set(GameConsumer.DISPATCH), expected)
 
@@ -130,6 +133,91 @@ class GestureTests(unittest.TestCase):
 
 async def _coro(value=None):
     return value
+# F2: quick-chat phrase allowlist + broadcast helper.
+class ChatPhraseTests(unittest.TestCase):
+    def test_valid_id_returns_phrase(self):
+        phrase = emotes.chat_phrase('gg')
+        self.assertIsNotNone(phrase)
+        self.assertEqual(phrase['text'], 'GG')
+
+    def test_unknown_id_returns_none(self):
+        self.assertIsNone(emotes.chat_phrase('definitely-not-a-phrase'))
+
+    def test_every_phrase_has_id_and_text(self):
+        for p in emotes.CHAT_PHRASES:
+            self.assertTrue(p.get('id'), p)
+            self.assertTrue(p.get('text'), p)
+
+    def test_phrase_ids_are_unique(self):
+        ids = [p['id'] for p in emotes.CHAT_PHRASES]
+        self.assertEqual(len(ids), len(set(ids)))
+
+    def test_client_mirror_ids_match_python(self):
+        """The CHAT_PHRASES mirror in GameController.js must list the same ids
+        (drift here = quick-chat buttons that fail server validation)."""
+        import os
+        import re
+
+        js_path = os.path.join(
+            os.path.dirname(os.path.dirname(__file__)),
+            'static', 'js', 'game', 'GameController.js',
+        )
+        with open(js_path, encoding='utf-8') as fh:
+            src = fh.read()
+        # Grab the first `const CHAT_PHRASES = [ ... ];` block.
+        block = src.split('const CHAT_PHRASES = [', 1)[1].split('];', 1)[0]
+        js_ids = re.findall(r"id:\s*'([^']+)'", block)
+        py_ids = [p['id'] for p in emotes.CHAT_PHRASES]
+        self.assertEqual(js_ids, py_ids)
+
+
+class ChatBroadcastTests(unittest.TestCase):
+    """broadcast_chat validates the id and only broadcasts allowed phrases."""
+
+    def _consumer(self):
+        c = GameConsumer()
+        c.sent = []
+
+        async def fake_broadcast_action(action):
+            c.sent.append(action)
+
+        c.broadcast_action = fake_broadcast_action
+        return c
+
+    def _run(self, coro):
+        return asyncio.new_event_loop().run_until_complete(coro)
+
+    def test_valid_phrase_broadcasts_chat(self):
+        c = self._consumer()
+        result = self._run(c.broadcast_chat('Alice', 'gg'))
+        self.assertTrue(result)
+        self.assertEqual(len(c.sent), 1)
+        action = c.sent[0]
+        self.assertEqual(action['type'], 'CHAT')
+        self.assertEqual(action['player_name'], 'Alice')
+        self.assertEqual(action['phrase_id'], 'gg')
+        self.assertEqual(action['text'], 'GG')
+
+    def test_invalid_phrase_is_ignored(self):
+        c = self._consumer()
+        result = self._run(c.broadcast_chat('Alice', 'bogus'))
+        self.assertFalse(result)
+        self.assertEqual(c.sent, [])
+
+    def test_malformed_phrase_id_is_ignored(self):
+        # None / empty / non-str ids must be rejected without crashing.
+        c = self._consumer()
+        for bad in (None, '', 0, [], {}):
+            self.assertFalse(self._run(c.broadcast_chat('Alice', bad)))
+        self.assertEqual(c.sent, [])
+
+    def test_paired_gesture_is_broadcast(self):
+        # A phrase with a paired gesture forwards it; one without sends None.
+        c = self._consumer()
+        self._run(c.broadcast_chat('Alice', 'gg'))      # has gesture 'wave'
+        self._run(c.broadcast_chat('Alice', 'yourturn'))  # no gesture
+        self.assertEqual(c.sent[0]['gesture'], 'wave')
+        self.assertIsNone(c.sent[1]['gesture'])
 
 
 class CreateGameViewTests(TestCase):

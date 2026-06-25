@@ -912,3 +912,89 @@ input[type="range"]::-moz-range-thumb {
         right: 12px;
     }
 }
+
+/* F2: Quick-chat (panel + picker). Styled with F4 design tokens; fallbacks let
+   it look right both before and after the F4 merge defines :root tokens. */
+#chat-box {
+    position: absolute;
+    bottom: 20px;
+    right: 20px;
+    width: 240px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    z-index: 200;
+}
+
+#chat-panel {
+    max-height: 160px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column-reverse; /* newest at bottom */
+    background: var(--surface, rgba(0, 0, 0, 0.6));
+    color: var(--text, #eee);
+    border-radius: var(--radius, 8px);
+    box-shadow: var(--shadow, 0 4px 10px rgba(0, 0, 0, 0.3));
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    padding: 8px;
+    font-size: 0.85rem;
+    backdrop-filter: blur(4px);
+}
+#chat-panel:empty { display: none; }
+
+.chat-entry {
+    margin-bottom: 4px;
+    padding: 4px 8px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    animation: slideInLeft 0.3s ease-out;
+}
+
+.chat-author {
+    font-weight: bold;
+    color: var(--accent, var(--primary-color, #4caf50));
+    margin-right: 6px;
+}
+
+#chat-quick {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    justify-content: flex-end;
+}
+
+.chat-quick-btn {
+    cursor: pointer;
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    background: var(--surface-2, var(--card-bg, rgba(0, 0, 0, 0.55)));
+    color: var(--text, #e0e0e0);
+    border-radius: var(--radius, 8px);
+    padding: 5px 10px;
+    font-size: 0.78rem;
+    line-height: 1;
+    transition: background 0.15s ease, transform 0.05s ease;
+}
+.chat-quick-btn:hover {
+    background: var(--accent, var(--primary-color, #4caf50));
+    color: #fff;
+}
+.chat-quick-btn:active { transform: scale(0.95); }
+
+/* The 3D speech bubble above the speaker's avatar is drawn by Three.js
+   (Avatar.setLabel). .chat-bubble is reserved for any DOM-based bubble. */
+.chat-bubble {
+    background: var(--surface, rgba(0, 0, 0, 0.85));
+    color: var(--text, #fff);
+    border-radius: var(--radius, 8px);
+    box-shadow: var(--shadow, 0 4px 10px rgba(0, 0, 0, 0.3));
+    padding: 6px 10px;
+    font-size: 0.85rem;
+}
+
+@media (max-width: 820px), (pointer: coarse) {
+    #chat-box {
+        bottom: calc(env(safe-area-inset-bottom, 0px) + 90px);
+        width: 150px;
+    }
+    #chat-panel { max-height: 90px; font-size: 0.72rem; }
+    .chat-quick-btn { font-size: 0.68rem; padding: 4px 7px; }
+}

@@ -86,6 +86,11 @@ export class SocketManager {
         this.send({ type: 'gesture', player_name: this.playerName, gesture: gesture });
     }
 
+    // F2: send a quick-chat phrase (validated server-side against CHAT_PHRASES).
+    sendChat(phraseId) {
+        this.send({ type: 'chat', player_name: this.playerName, phrase_id: phraseId });
+    }
+
     send(data) {
         if (this.socket && this.socket.readyState === WebSocket.OPEN) {
             this.socket.send(JSON.stringify({ 'message': JSON.stringify(data) }));

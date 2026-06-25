@@ -264,3 +264,53 @@ relays messages between agents when an entry below requests it.
     none` when closed (taps pass through to the InputHandler tap layer); right-
     anchored, doesn't overlap the centered `#game-controls`; mobile lift matches.
     No NaN sources (durations table never 0). Final: **58 tests green.**
+- (F2 Chat) Quick-chat implemented on `feat/chat`.
+  - **Phrases**: filled `CHAT_PHRASES` in `game/emotes.py` (12 entries: ohno,
+    gotcha, iwin, yourturn, nice, soclose, wellplayed, hurryup, oops, gg, hello,
+    thanks). Some pair an optional `gesture` (shake/nod/celebrate/wave — matching
+    the gesture names in `Avatar._applyGesture`); pairing is best-effort and the
+    client feature-detects, so F1 changing the gesture list won't break chat.
+  - **Message shape**: client → server `{type:'chat', player_name, phrase_id}`.
+    Server broadcasts action `{type:'CHAT', player_name, phrase_id, text, gesture?}`.
+  - **AI-reusable helper (for F3)**: `async def broadcast_chat(self, player_name,
+    phrase_id)` on `GameConsumer` — validates `phrase_id` via
+    `emotes.chat_phrase`, broadcasts the CHAT action, returns True/False (False =
+    unknown id, no broadcast). AI can call `await self.broadcast_chat(ai_name, id)`
+    to make an AI speak. The `chat` DISPATCH handler just delegates to it.
+  - **Client**: `SocketManager.sendChat(phraseId)`. `GameController.handleAction`
+    handles `CHAT`: speech bubble over the speaker via
+    `renderer.setAvatarLabel(slot, text)` + optional `renderer.triggerGesture`,
+    auto-clears after 4s; also appends to a chat log. `getSlotForPlayer(name)` is
+    the inverse of `getOpponentAvatarSeeds()` seat mapping. There's a client
+    mirror of `CHAT_PHRASES` in `GameController.js` (keep in sync with emotes.py).
+  - **UI ids/classes** (namespace `chat-`): `#chat-box` (wrapper), `#chat-panel`
+    (log), `#chat-quick` (picker), `.chat-entry`, `.chat-author`, `.chat-quick-btn`,
+    `.chat-bubble` (reserved). Styled with F4 tokens (`--surface`, `--surface-2`,
+    `--accent`, `--text`, `--radius`, `--shadow`) using fallbacks so it works
+    pre/post the F4 merge.
+  - **Tests**: added `ChatPhraseTests` + `ChatBroadcastTests` in `game/tests.py`
+    and extended the DISPATCH coverage set. `manage.py test game` green (59).
+  - **Merge notes**: shared-file edits are additive and `# F2`/`// F2` marked —
+    `consumers.py` (import + DISPATCH end + handler/helper), `GameController.js`,
+    `index.html` (block after `#sequence-controls`), `style.css` (appended),
+    `tests.py`. Only overlap risk with F1 is the DISPATCH dict tail and the
+    shared `emotes.py` (F1 fills `GESTURES`, F2 fills `CHAT_PHRASES` — disjoint).
+- (QA F2 Chat) Reviewed `feat/chat`; one real bug fixed, hardened, tests added.
+  - **[HIGH] XSS in chat log** (`GameController.appendChatLog`): built the entry
+    with `innerHTML` interpolating `player_name`. Player names are user-chosen and
+    only `.strip()`ed server-side (no HTML escaping — see `views._normalize_seats`),
+    so a player named `<img src=x onerror=...>` would execute JS for every other
+    player on each quick-chat. **Fixed**: rebuilt the entry with `createElement` +
+    `textContent` / `createTextNode` (no innerHTML). The 3D bubble path
+    (`Avatar.setLabel`, canvas texture) was already injection-safe.
+  - **Verified, no bug**: server allowlists ids (`broadcast_chat` → `emotes.chat_phrase`,
+    returns False / no broadcast for unknown ids); `getSlotForPlayer` correctly
+    mirrors `getOpponentAvatarSeeds` seat math (self → -1, no self-bubble);
+    per-slot bubble timers prevent overlap on rapid chats; chat log capped at 30;
+    `handleChat` exceptions can't freeze the FIFO queue (`processQueues` try/catch
+    recovers); client `CHAT_PHRASES` mirror ids match Python exactly.
+  - **Tests added** (now 62 green): `test_client_mirror_ids_match_python`
+    (drift guard parsing the JS mirror), `test_malformed_phrase_id_is_ignored`
+    (None/''/0/[]/{} rejected, no crash), `test_paired_gesture_is_broadcast`.
+  - **For merge**: changes stay within chat scope, `// F2`/`# F2` marked. No
+    cross-feature action needed.

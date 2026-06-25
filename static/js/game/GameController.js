@@ -7,6 +7,24 @@ import { UIManager } from '../ui/UIManager.js';
 import { DECK_POS, CHOICE_POS, HAND_CENTER_POS } from '../utils/Constants.js';
 import { hud } from '../utils/Hud.js';
 
+// F2: client mirror of game/emotes.py CHAT_PHRASES (id + display text). The
+// server is the source of truth and re-validates ids; this only drives the
+// quick-chat picker buttons. Keep in sync with the Python allowlist.
+const CHAT_PHRASES = [
+    { id: 'ohno', text: 'Oh no!' },
+    { id: 'gotcha', text: 'Gotcha!' },
+    { id: 'iwin', text: 'I win!' },
+    { id: 'yourturn', text: 'Your turn' },
+    { id: 'nice', text: 'Nice!' },
+    { id: 'soclose', text: 'So close' },
+    { id: 'wellplayed', text: 'Well played' },
+    { id: 'hurryup', text: 'Hurry up!' },
+    { id: 'oops', text: 'Oops' },
+    { id: 'gg', text: 'GG' },
+    { id: 'hello', text: 'Hello!' },
+    { id: 'thanks', text: 'Thanks!' },
+];
+
 export class GameController {
     constructor() {
         if (window.location.search.includes('hud')) hud.enable();
@@ -146,6 +164,7 @@ export class GameController {
         });
         
         this.socket.connect();
+        this.setupQuickChat();  // F2: build the quick-chat picker buttons
         this.animate();
         this.logMessage(`Game started! Share code <span class="log-card">${gameId}</span> for others to join.`);
     }
@@ -407,7 +426,88 @@ export class GameController {
                 this.notify(msg, iWon ? 'success' : 'info');
                 location.reload();
             }
+        } else if (action.type === 'CHAT') {
+            // F2: a quick-chat line. Show a bubble over the speaker (opponents
+            // only; mapped player->slot like getOpponentAvatarSeeds) AND log it.
+            this.handleChat(action);
         }
+    }
+
+    // F2: render an incoming CHAT action — speech bubble + chat log entry.
+    handleChat(action) {
+        const text = action.text || '';
+        this.appendChatLog(action.player_name, text);
+
+        // Bubble: map the speaker to a renderer avatar slot. Opponents only
+        // (my own avatar isn't rendered). Slot i corresponds to seat
+        // (me-1-i) mod N, the inverse of getOpponentAvatarSeeds()'s mapping.
+        const slot = this.getSlotForPlayer(action.player_name);
+        if (slot !== -1 && this.renderer) {
+            this.renderer.setAvatarLabel(slot, text);
+            // Best-effort paired gesture (feature-detected: triggerGesture is a
+            // no-op for an unknown gesture name).
+            if (action.gesture && this.renderer.triggerGesture) {
+                this.renderer.triggerGesture(slot, action.gesture);
+            }
+            // Auto-clear the bubble after ~4s. Keyed per slot so a newer line
+            // cancels the previous timer.
+            this._chatBubbleTimers = this._chatBubbleTimers || {};
+            clearTimeout(this._chatBubbleTimers[slot]);
+            this._chatBubbleTimers[slot] = setTimeout(() => {
+                if (this.renderer) this.renderer.setAvatarLabel(slot, null);
+            }, 4000);
+        }
+    }
+
+    // F2: inverse of getOpponentAvatarSeeds() seat mapping. Returns the render
+    // slot for an opponent's player_name, or -1 (e.g. my own name / not found).
+    getSlotForPlayer(playerName) {
+        const N = this.game.players.length;
+        const me = this.game.getMyIndex();
+        if (N <= 1 || me === -1) return -1;
+        for (let i = 0; i < N - 1; i++) {
+            const seat = (((me - 1 - i) % N) + N) % N;
+            const p = this.game.players[seat];
+            if (p && p.name === playerName) return i;
+        }
+        return -1;
+    }
+
+    appendChatLog(playerName, text) {
+        const panel = document.getElementById('chat-panel');
+        if (!panel) return;
+        const entry = document.createElement('div');
+        entry.className = 'chat-entry';
+        const who = playerName === (this.game.me && this.game.me.name) ? 'You' : playerName;
+        // F2: build via textContent, never innerHTML. player_name is user-chosen
+        // and NOT server-sanitized, so interpolating it into innerHTML is an XSS
+        // sink (e.g. a player named "<img src=x onerror=...>" would execute for
+        // everyone else on every chat). text is allowlisted but still set safely.
+        const author = document.createElement('span');
+        author.className = 'chat-author';
+        author.textContent = who;
+        entry.appendChild(author);
+        entry.appendChild(document.createTextNode(text));
+        panel.prepend(entry);
+        while (panel.children.length > 30) panel.removeChild(panel.lastChild);
+    }
+
+    // F2: build the quick-chat picker (one button per CHAT_PHRASE). Each button
+    // sends the phrase id; the server validates and broadcasts it back to all.
+    setupQuickChat() {
+        const picker = document.getElementById('chat-quick');
+        if (!picker || picker.dataset.built) return;
+        picker.dataset.built = '1';
+        CHAT_PHRASES.forEach(p => {
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'chat-quick-btn';
+            btn.textContent = p.text;
+            btn.addEventListener('click', () => {
+                if (this.socket) this.socket.sendChat(p.id);
+            });
+            picker.appendChild(btn);
+        });
     }
 
     updateShownSequencesUI() {
