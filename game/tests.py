@@ -14,7 +14,7 @@ import unittest
 from types import SimpleNamespace
 from unittest import mock
 
-from asgiref.sync import sync_to_async  # S3 (QA): async timer tests
+from asgiref.sync import async_to_sync, sync_to_async  # S1 + S3 (QA): async-consumer/timer tests
 from django.test import Client, TestCase, TransactionTestCase
 from django.utils import timezone  # S3 (QA)
 
@@ -89,6 +89,7 @@ class DispatchTests(unittest.TestCase):
             'reorder_hand', 'claim_game',
             'gesture',  # F1
             'chat',  # F2
+            'play_again',  # S1
         }
         self.assertEqual(set(GameConsumer.DISPATCH), expected)
 
@@ -1042,6 +1043,359 @@ class TurnTimerSchedulingTests(TransactionTestCase):
         game.refresh_from_db()
         self.assertEqual(game.turn_step, 'PICK')  # nothing happened, no spin
         self.assertEqual(called, [])
+# S1: --- claim validation + round scoring (pure rules engine) --------------
+class RoundScoringTests(unittest.TestCase):
+    from game.rules import is_winning_claim, round_penalty, round_scores
+
+    def _split_winning(self):
+        """A winning 21-card hand split into 2 shown groups + concealed rest."""
+        cards = _winning_21()
+        shown = [cards[0:3], cards[3:6]]   # two pure sequences laid down
+        concealed = cards[6:]              # the remaining 15 cards in hand
+        return shown, concealed
+
+    def test_is_winning_claim_true_for_complete_hand(self):
+        from game.rules import is_winning_claim
+        shown, concealed = self._split_winning()
+        self.assertTrue(is_winning_claim(shown, concealed, set()))
+
+    def test_is_winning_claim_true_when_nothing_shown(self):
+        from game.rules import is_winning_claim
+        # Whole hand concealed still wins (pure sequences are in `hand`).
+        self.assertTrue(is_winning_claim([], _winning_21(), set()))
+
+    def test_is_winning_claim_false_for_incomplete_hand(self):
+        from game.rules import is_winning_claim
+        shown, concealed = self._split_winning()
+        # Swap one card in hand for a junk card -> no full partition.
+        broken = list(concealed)
+        broken[0] = _card("DIAMOND", "2", 999)
+        self.assertFalse(is_winning_claim(shown, broken, set()))
+
+    def test_is_winning_claim_false_without_pure_sequence(self):
+        from game.rules import is_winning_claim
+        # Six tunnelas + (would-be) but no pure sequence at all -> not a win.
+        groups, cid = [], 0
+        faces = [("CLUB", "2"), ("DIAMOND", "K"), ("SPADE", "8"),
+                 ("HEART", "3"), ("CLUB", "7"), ("HEART", "9"), ("SPADE", "5")]
+        cards = []
+        for s, n in faces:
+            for _ in range(3):
+                cid += 1
+                cards.append(_card(s, n, cid))
+        self.assertFalse(is_winning_claim([], cards, set()))
+
+    def test_round_penalty_winner_style_zero_when_all_melds(self):
+        from game.rules import round_penalty
+        # A fully-melding concealed hand carries no penalty.
+        self.assertEqual(round_penalty([], _winning_21(), set()), 0)
+
+    def test_round_penalty_counts_unmelded_only(self):
+        from game.rules import round_penalty
+        # Two loose face cards (10 pts each) with nothing to meld.
+        hand = [_card("HEART", "K", 1), _card("SPADE", "Q", 2)]
+        self.assertEqual(round_penalty([], hand, set()), 20)
+
+    def test_round_penalty_is_capped(self):
+        from game.rules import round_penalty
+        hand = [_card("HEART", "K", i) for i in range(20)]  # 20 * 10 = 200
+        self.assertEqual(round_penalty([], hand, set(), max_penalty=100), 100)
+        self.assertEqual(round_penalty([], hand, set(), max_penalty=None), 200)
+
+    def test_round_scores_winner_zero_losers_penalised(self):
+        from game.rules import round_scores
+        players = [
+            {'name': 'W', 'is_winner': True, 'shown': [], 'hand': _winning_21()},
+            {'name': 'L', 'is_winner': False, 'shown': [],
+             'hand': [_card("HEART", "K", 1), _card("SPADE", "Q", 2)]},
+        ]
+        scored = {s['name']: s['points'] for s in round_scores(players)}
+        self.assertEqual(scored['W'], 0)
+        self.assertEqual(scored['L'], 20)
+
+
+class ClaimGameValidationTests(TransactionTestCase):
+    """S1: the human claim_game validates the full hand via the rules engine.
+
+    TransactionTestCase (not TestCase) so the consumer's `sync_to_async` DB
+    access — which runs on a worker thread — doesn't deadlock against a per-test
+    atomic transaction on SQLite.
+    """
+
+    def _consumer(self, room):
+        c = GameConsumer()
+        c.room_name = room
+        c.room_group_name = 'game_%s' % room
+        c.sent = []
+        c.rejects = []
+
+        async def fake_broadcast_action(action):
+            c.sent.append(action)
+
+        async def fake_send_reject(reject_type, reason):
+            c.rejects.append((reject_type, reason))
+
+        c.broadcast_action = fake_broadcast_action
+        c.send_reject = fake_send_reject
+        return c
+
+    def _run(self, coro):
+        async def _wrap():
+            return await coro
+        return async_to_sync(_wrap)()
+
+    def _game(self, hand, shown=None):
+        game = Game.objects.create(
+            num_players=1, code=Game.generate_code(), deck=[], visibles=[],
+            turn_step='DISCARD', turn_player_index=0)
+        player = Player.objects.create(
+            name="Alice", game=game, player_type='HUMAN', hand=hand,
+            shown_sequences=shown or [])
+        return game, player
+
+    def test_valid_claim_ends_round_and_scores(self):
+        cards = _winning_21()
+        game, player = self._game(hand=cards)
+        c = self._consumer(game.code)
+        self._run(c.claim_game('Alice'))
+        self.assertEqual(c.rejects, [])
+        self.assertEqual(len(c.sent), 1)
+        action = c.sent[0]
+        self.assertEqual(action['type'], 'GAME_CLAIMED')
+        self.assertEqual(action['player_name'], 'Alice')
+        self.assertIn('results', action)
+        self.assertEqual(action['results']['winner'], 'Alice')
+        game.refresh_from_db()
+        self.assertFalse(game.is_active)
+        player.refresh_from_db()
+        self.assertEqual(player.points, 0)  # winner pays nothing
+
+    def test_valid_claim_with_shown_sequences(self):
+        cards = _winning_21()
+        # Three sequences/tunnelas already shown; the rest concealed.
+        game, player = self._game(
+            hand=cards[9:], shown=[cards[0:3], cards[3:6], cards[6:9]])
+        c = self._consumer(game.code)
+        self._run(c.claim_game('Alice'))
+        self.assertEqual(c.rejects, [])
+        self.assertEqual(c.sent[0]['type'], 'GAME_CLAIMED')
+
+    def test_invalid_claim_is_rejected(self):
+        # One junk card breaks the partition -> CLAIM_FAILED, no game end.
+        cards = _winning_21()
+        cards[0] = _card("DIAMOND", "2", 999)
+        game, player = self._game(hand=cards)
+        c = self._consumer(game.code)
+        self._run(c.claim_game('Alice'))
+        self.assertEqual(c.sent, [])
+        self.assertEqual(len(c.rejects), 1)
+        self.assertEqual(c.rejects[0][0], 'CLAIM_FAILED')
+        game.refresh_from_db()
+        self.assertTrue(game.is_active)  # round continues
+
+    def test_ai_win_finish_round_accumulates_and_broadcasts(self):
+        # S1: an AI win goes through the SAME _finish_round path, so standings
+        # are broadcast and loser points accumulate.
+        game = Game.objects.create(
+            num_players=2, code=Game.generate_code(), deck=[], visibles=[],
+            turn_step='DISCARD', turn_player_index=0)
+        winner = Player.objects.create(
+            name="Bot", game=game, player_type='AI', hand=_winning_21())
+        loser = Player.objects.create(
+            name="Bob", game=game, player_type='HUMAN', points=5,
+            hand=[_card("HEART", "K", 1), _card("SPADE", "Q", 2)])
+        c = self._consumer(game.code)
+        players = list(game.players.all().order_by('created_at'))
+        self._run(c._finish_round(game, players, "Bot"))
+        self.assertEqual(c.rejects, [])
+        action = c.sent[0]
+        self.assertEqual(action['type'], 'GAME_CLAIMED')
+        self.assertEqual(action['results']['winner'], 'Bot')
+        names = {s['name']: s for s in action['results']['standings']}
+        self.assertEqual(names['Bot']['round_points'], 0)
+        self.assertTrue(names['Bot']['is_winner'])
+        self.assertEqual(names['Bob']['round_points'], 20)
+        self.assertEqual(names['Bob']['total_points'], 25)
+        loser.refresh_from_db(); winner.refresh_from_db()
+        self.assertEqual(loser.points, 25)
+        self.assertEqual(winner.points, 0)
+        game.refresh_from_db()
+        self.assertFalse(game.is_active)
+
+    def test_standings_ranked_by_cumulative_not_round_winner(self):
+        # The round winner can still trail on the match scoreboard if they
+        # carry heavy prior-round points. Standings rank by cumulative total.
+        game = Game.objects.create(
+            num_players=2, code=Game.generate_code(), deck=[], visibles=[],
+            turn_step='DISCARD', turn_player_index=0)
+        # Winner carries 90 prior points; loser only 5 + 20 this round = 25.
+        Player.objects.create(
+            name="Alice", game=game, player_type='HUMAN', points=90,
+            hand=_winning_21())
+        Player.objects.create(
+            name="Bob", game=game, player_type='HUMAN', points=5,
+            hand=[_card("HEART", "K", 1), _card("SPADE", "Q", 2)])
+        c = self._consumer(game.code)
+        players = list(game.players.all().order_by('created_at'))
+        self._run(c._finish_round(game, players, "Alice"))
+        standings = c.sent[0]['results']['standings']
+        ranked = {s['rank']: s['name'] for s in standings}
+        # Bob (25 total) leads the scoreboard despite losing the round.
+        self.assertEqual(ranked[1], 'Bob')
+        self.assertEqual(ranked[2], 'Alice')
+
+    def test_partial_show_double_count_does_not_falsely_win(self):
+        # If a player shows < 3 sequences, those cards remain in `hand` AND in
+        # `shown_sequences`, so claim_game unions a card twice. Verify this never
+        # *manufactures* a win: a non-winning holding still gets CLAIM_FAILED.
+        cards = _winning_21()
+        cards[0] = _card("DIAMOND", "2", 999)  # break the partition
+        # Pretend one (still-incomplete) sequence was registered but not stripped.
+        game, player = self._game(hand=cards, shown=[cards[3:6]])
+        c = self._consumer(game.code)
+        self._run(c.claim_game('Alice'))
+        self.assertEqual(c.sent, [])
+        self.assertEqual(c.rejects[0][0], 'CLAIM_FAILED')
+
+    def test_claim_rejected_when_not_your_turn(self):
+        cards = _winning_21()
+        game = Game.objects.create(
+            num_players=2, code=Game.generate_code(), deck=[], visibles=[],
+            turn_step='DISCARD', turn_player_index=1)  # someone else's turn
+        Player.objects.create(name="Alice", game=game, player_type='HUMAN', hand=cards)
+        Player.objects.create(name="Bob", game=game, player_type='HUMAN', hand=[])
+        c = self._consumer(game.code)
+        self._run(c.claim_game('Alice'))
+        self.assertEqual(c.sent, [])
+        self.assertEqual(c.rejects[0][0], 'CLAIM_FAILED')
+
+    def test_loser_points_accumulate(self):
+        cards = _winning_21()
+        game = Game.objects.create(
+            num_players=2, code=Game.generate_code(), deck=[], visibles=[],
+            turn_step='DISCARD', turn_player_index=0)
+        Player.objects.create(name="Alice", game=game, player_type='HUMAN', hand=cards)
+        loser = Player.objects.create(
+            name="Bob", game=game, player_type='HUMAN', points=5,
+            hand=[_card("HEART", "K", 1), _card("SPADE", "Q", 2)])
+        c = self._consumer(game.code)
+        self._run(c.claim_game('Alice'))
+        loser.refresh_from_db()
+        self.assertEqual(loser.points, 25)  # 5 prior + 20 this round
+
+
+class PlayAgainTests(TransactionTestCase):
+    """S1: re-deal a fresh round while keeping cumulative points.
+
+    TransactionTestCase so the async `play_again` handler's threaded DB access
+    doesn't deadlock SQLite against a per-test transaction.
+    """
+
+    def test_start_new_round_resets_hands_keeps_points(self):
+        game = Game.objects.create(
+            num_players=2, code=Game.generate_code(), round_number=1,
+            turn_player_index=0, maal_card=_card("HEART", "7", 99))
+        game.initialize_deck()
+        a = Player.objects.create(name="A", game=game, points=12, is_dealer=True)
+        b = Player.objects.create(name="B", game=game, points=3)
+        game.deal_cards()
+        a.refresh_from_db(); b.refresh_from_db()
+        # Simulate end-of-round leftovers + shown melds.
+        a.shown_sequences = [[_card("SPADE", "4", 1)]]
+        a.turn_count = 7
+        a.save()
+
+        game.start_new_round()
+
+        a.refresh_from_db(); b.refresh_from_db(); game.refresh_from_db()
+        self.assertEqual(len(a.hand), 21)
+        self.assertEqual(len(b.hand), 21)
+        self.assertEqual(a.shown_sequences, [])
+        self.assertEqual(a.turn_count, 0)
+        self.assertEqual(a.points, 12)   # cumulative preserved
+        self.assertEqual(b.points, 3)
+        self.assertEqual(game.round_number, 2)
+        self.assertIsNone(game.maal_card)
+        self.assertTrue(game.is_active)
+        self.assertEqual(game.phase, 'PLAYING')
+        # Dealer rotated A -> B.
+        self.assertFalse(a.is_dealer)
+        self.assertTrue(b.is_dealer)
+
+    def test_play_again_handler_redeals(self):
+        game = Game.objects.create(
+            num_players=2, code=Game.generate_code(), round_number=1,
+            is_active=False, turn_player_index=0)
+        game.initialize_deck()
+        Player.objects.create(name="A", game=game, is_dealer=True)
+        Player.objects.create(name="B", game=game)
+        game.deal_cards()
+
+        c = GameConsumer()
+        c.room_name = game.code
+        c.room_group_name = 'game_%s' % game.code
+        c.sent = []
+
+        async def fake_broadcast_action(action):
+            c.sent.append(action)
+        c.broadcast_action = fake_broadcast_action
+        c._ensure_ai_running = lambda: None  # no channel layer in the test
+
+        async_to_sync(c.play_again)('A')
+
+        game.refresh_from_db()
+        self.assertEqual(game.round_number, 2)
+        self.assertTrue(game.is_active)
+        self.assertEqual(c.sent[0]['type'], 'NEW_ROUND')
+        self.assertEqual(c.sent[0]['round_number'], 2)
+
+    def test_play_again_ignored_while_active(self):
+        game = Game.objects.create(
+            num_players=2, code=Game.generate_code(), round_number=1,
+            is_active=True)
+        Player.objects.create(name="A", game=game)
+        c = GameConsumer()
+        c.room_name = game.code
+        c.sent = []
+
+        async def fake_broadcast_action(action):
+            c.sent.append(action)
+        c.broadcast_action = fake_broadcast_action
+        c._ensure_ai_running = lambda: None
+
+        async_to_sync(c.play_again)('A')
+        game.refresh_from_db()
+        self.assertEqual(game.round_number, 1)  # unchanged
+        self.assertEqual(c.sent, [])
+
+    def test_play_again_cannot_be_spammed_to_redeal_twice(self):
+        # S1: two play-again messages after the same finished round must only
+        # re-deal once (compare-and-set on is_active), not bump the round twice.
+        game = Game.objects.create(
+            num_players=2, code=Game.generate_code(), round_number=1,
+            is_active=False, turn_player_index=0)
+        game.initialize_deck()
+        Player.objects.create(name="A", game=game, is_dealer=True)
+        Player.objects.create(name="B", game=game)
+        game.deal_cards()
+
+        c = GameConsumer()
+        c.room_name = game.code
+        c.room_group_name = 'game_%s' % game.code
+        c.sent = []
+
+        async def fake_broadcast_action(action):
+            c.sent.append(action)
+        c.broadcast_action = fake_broadcast_action
+        c._ensure_ai_running = lambda: None
+
+        async_to_sync(c.play_again)('A')
+        async_to_sync(c.play_again)('A')  # second click — must be a no-op now
+
+        game.refresh_from_db()
+        self.assertEqual(game.round_number, 2)  # only one re-deal
+        new_rounds = [a for a in c.sent if a['type'] == 'NEW_ROUND']
+        self.assertEqual(len(new_rounds), 1)
 
 
 if __name__ == "__main__":

@@ -27,9 +27,13 @@ from .melds import (
     is_winning_hand,
 )
 from .scoring import (
+    DEFAULT_MAX_ROUND_PENALTY,  # S1
     DEFAULT_POINT_VALUES,
     card_points,
     hand_points,
+    is_winning_claim,  # S1
+    round_penalty,  # S1
+    round_scores,  # S1
     unmelded_points,
 )
 # S2: maal/tiplu joker derivation (single source of truth).
@@ -46,4 +50,6 @@ __all__ = [
     "card_points", "hand_points", "unmelded_points", "DEFAULT_POINT_VALUES",
     # jokers (S2)
     "maal_joker_faces", "maal_joker_ids",
+    # scoring/claim (S1)
+    "is_winning_claim", "round_penalty", "round_scores", "DEFAULT_MAX_ROUND_PENALTY",
 ]

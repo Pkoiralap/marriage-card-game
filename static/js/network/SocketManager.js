@@ -80,6 +80,11 @@ export class SocketManager {
         this.send({ type: 'claim_game', player_name: this.playerName });
     }
 
+    // S1: start a fresh round in the same room (cumulative points preserved).
+    playAgain() {
+        this.send({ type: 'play_again', player_name: this.playerName });
+    }
+
     // F1: send a cosmetic gesture/emote. Server validates against the GESTURES
     // allowlist and broadcasts a GESTURE action to everyone.
     sendGesture(gesture) {
