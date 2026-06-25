@@ -8,12 +8,14 @@ the app registry these handlers import):
     python manage.py test game
 """
 
+import asyncio
 import json
 import unittest
 from types import SimpleNamespace
 
 from django.test import Client, TestCase
 
+from game import emotes  # F2
 from game.consumers import GameConsumer, TurnContext
 from game.models import CODE_ALPHABET, Game, Player
 
@@ -72,8 +74,63 @@ class DispatchTests(unittest.TestCase):
             'get_game_state', 'pick_card', 'discard_card', 'register_sequence',
             'register_tunnela', 'register_dublee', 'select_maal', 'cancel_sequence',
             'reorder_hand', 'claim_game',
+            'chat',  # F2
         }
         self.assertEqual(set(GameConsumer.DISPATCH), expected)
+
+
+# F2: quick-chat phrase allowlist + broadcast helper.
+class ChatPhraseTests(unittest.TestCase):
+    def test_valid_id_returns_phrase(self):
+        phrase = emotes.chat_phrase('gg')
+        self.assertIsNotNone(phrase)
+        self.assertEqual(phrase['text'], 'GG')
+
+    def test_unknown_id_returns_none(self):
+        self.assertIsNone(emotes.chat_phrase('definitely-not-a-phrase'))
+
+    def test_every_phrase_has_id_and_text(self):
+        for p in emotes.CHAT_PHRASES:
+            self.assertTrue(p.get('id'), p)
+            self.assertTrue(p.get('text'), p)
+
+    def test_phrase_ids_are_unique(self):
+        ids = [p['id'] for p in emotes.CHAT_PHRASES]
+        self.assertEqual(len(ids), len(set(ids)))
+
+
+class ChatBroadcastTests(unittest.TestCase):
+    """broadcast_chat validates the id and only broadcasts allowed phrases."""
+
+    def _consumer(self):
+        c = GameConsumer()
+        c.sent = []
+
+        async def fake_broadcast_action(action):
+            c.sent.append(action)
+
+        c.broadcast_action = fake_broadcast_action
+        return c
+
+    def _run(self, coro):
+        return asyncio.new_event_loop().run_until_complete(coro)
+
+    def test_valid_phrase_broadcasts_chat(self):
+        c = self._consumer()
+        result = self._run(c.broadcast_chat('Alice', 'gg'))
+        self.assertTrue(result)
+        self.assertEqual(len(c.sent), 1)
+        action = c.sent[0]
+        self.assertEqual(action['type'], 'CHAT')
+        self.assertEqual(action['player_name'], 'Alice')
+        self.assertEqual(action['phrase_id'], 'gg')
+        self.assertEqual(action['text'], 'GG')
+
+    def test_invalid_phrase_is_ignored(self):
+        c = self._consumer()
+        result = self._run(c.broadcast_chat('Alice', 'bogus'))
+        self.assertFalse(result)
+        self.assertEqual(c.sent, [])
 
 
 class CreateGameViewTests(TestCase):

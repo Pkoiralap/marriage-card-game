@@ -61,3 +61,34 @@ relays messages between agents when an entry below requests it.
 
 ## Log (append entries; newest at bottom)
 - (orchestrator) Baseline at master `0054b09`. Branches not yet created.
+- (F2 Chat) Quick-chat implemented on `feat/chat`.
+  - **Phrases**: filled `CHAT_PHRASES` in `game/emotes.py` (12 entries: ohno,
+    gotcha, iwin, yourturn, nice, soclose, wellplayed, hurryup, oops, gg, hello,
+    thanks). Some pair an optional `gesture` (shake/nod/celebrate/wave — matching
+    the gesture names in `Avatar._applyGesture`); pairing is best-effort and the
+    client feature-detects, so F1 changing the gesture list won't break chat.
+  - **Message shape**: client → server `{type:'chat', player_name, phrase_id}`.
+    Server broadcasts action `{type:'CHAT', player_name, phrase_id, text, gesture?}`.
+  - **AI-reusable helper (for F3)**: `async def broadcast_chat(self, player_name,
+    phrase_id)` on `GameConsumer` — validates `phrase_id` via
+    `emotes.chat_phrase`, broadcasts the CHAT action, returns True/False (False =
+    unknown id, no broadcast). AI can call `await self.broadcast_chat(ai_name, id)`
+    to make an AI speak. The `chat` DISPATCH handler just delegates to it.
+  - **Client**: `SocketManager.sendChat(phraseId)`. `GameController.handleAction`
+    handles `CHAT`: speech bubble over the speaker via
+    `renderer.setAvatarLabel(slot, text)` + optional `renderer.triggerGesture`,
+    auto-clears after 4s; also appends to a chat log. `getSlotForPlayer(name)` is
+    the inverse of `getOpponentAvatarSeeds()` seat mapping. There's a client
+    mirror of `CHAT_PHRASES` in `GameController.js` (keep in sync with emotes.py).
+  - **UI ids/classes** (namespace `chat-`): `#chat-box` (wrapper), `#chat-panel`
+    (log), `#chat-quick` (picker), `.chat-entry`, `.chat-author`, `.chat-quick-btn`,
+    `.chat-bubble` (reserved). Styled with F4 tokens (`--surface`, `--surface-2`,
+    `--accent`, `--text`, `--radius`, `--shadow`) using fallbacks so it works
+    pre/post the F4 merge.
+  - **Tests**: added `ChatPhraseTests` + `ChatBroadcastTests` in `game/tests.py`
+    and extended the DISPATCH coverage set. `manage.py test game` green (59).
+  - **Merge notes**: shared-file edits are additive and `# F2`/`// F2` marked —
+    `consumers.py` (import + DISPATCH end + handler/helper), `GameController.js`,
+    `index.html` (block after `#sequence-controls`), `style.css` (appended),
+    `tests.py`. Only overlap risk with F1 is the DISPATCH dict tail and the
+    shared `emotes.py` (F1 fills `GESTURES`, F2 fills `CHAT_PHRASES` — disjoint).

@@ -11,6 +11,7 @@ from django.db import transaction
 from .models import Player, Game, GameAction
 from .logic import HumanPlayer, AIPlayer
 from .rules import Card, is_sequence, is_tunnela, is_dublee
+from . import emotes  # F2: quick-chat phrase allowlist
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +41,7 @@ class GameConsumer(AsyncWebsocketConsumer):
         'cancel_sequence':   ('cancel_sequence',   ('player_name',)),
         'reorder_hand':      ('reorder_hand',      ('player_name', 'old_index', 'new_index')),
         'claim_game':        ('claim_game',        ('player_name',)),
+        'chat':              ('chat',              ('player_name', 'phrase_id')),  # F2
     }
 
     # --- connection lifecycle ----------------------------------------------
@@ -282,6 +284,32 @@ class GameConsumer(AsyncWebsocketConsumer):
                 'player_name': player_name,
                 'message': f"{player_name} has won the game!",
             })
+
+    # --- quick-chat (F2) ----------------------------------------------------
+    async def chat(self, player_name, phrase_id):
+        """Human quick-chat: validate the phrase id, then broadcast it."""
+        await self.broadcast_chat(player_name, phrase_id)
+
+    async def broadcast_chat(self, player_name, phrase_id):
+        """Validate `phrase_id` against CHAT_PHRASES and broadcast a CHAT action.
+
+        Reusable by the AI agent (F3): call
+            await self.broadcast_chat(ai_player_name, phrase_id)
+        to make an AI say a preset line. Unknown ids are ignored (no broadcast).
+        Broadcasts {type:'CHAT', player_name, phrase_id, text} (+ optional
+        `gesture` if the phrase pairs one, for a best-effort avatar animation).
+        """
+        phrase = emotes.chat_phrase(phrase_id)
+        if not phrase:
+            return False
+        await self.broadcast_action({
+            'type': 'CHAT',
+            'player_name': player_name,
+            'phrase_id': phrase_id,
+            'text': phrase['text'],
+            'gesture': phrase.get('gesture'),
+        })
+        return True
 
     # --- AI driver ----------------------------------------------------------
     async def handle_ai_turns(self):

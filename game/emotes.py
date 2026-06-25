@@ -11,8 +11,23 @@ GESTURES = [
 ]
 
 # F2 (chat): allowed quick-chat phrases. Each entry: {"id", "text", optional "gesture"}.
+# The optional "gesture" pairs a phrase with an emote so a chat can also play an
+# avatar animation. Pairing is best-effort: the client feature-detects whether the
+# gesture exists (F1 owns the gesture list in GESTURES), so an unknown gesture is
+# simply skipped. AI (F3) may import CHAT_PHRASES / chat_phrase to send lines.
 CHAT_PHRASES = [
-    # e.g. {"id": "ohno", "text": "Oh no!", "gesture": "facepalm"},
+    {"id": "ohno",      "text": "Oh no!",      "gesture": "shake"},
+    {"id": "gotcha",    "text": "Gotcha!",     "gesture": "nod"},
+    {"id": "iwin",      "text": "I win!",      "gesture": "celebrate"},
+    {"id": "yourturn",  "text": "Your turn"},
+    {"id": "nice",      "text": "Nice!",       "gesture": "nod"},
+    {"id": "soclose",   "text": "So close"},
+    {"id": "wellplayed","text": "Well played", "gesture": "nod"},
+    {"id": "hurryup",   "text": "Hurry up!",   "gesture": "shake"},
+    {"id": "oops",      "text": "Oops"},
+    {"id": "gg",        "text": "GG",          "gesture": "wave"},
+    {"id": "hello",     "text": "Hello!",      "gesture": "wave"},
+    {"id": "thanks",    "text": "Thanks!",     "gesture": "nod"},
 ]
 
 
