@@ -18,6 +18,15 @@ export class Game {
         this.visibles = [];
         this.choiceCard = null;
         this.players = [];
+        // S3: per-turn AFK deadline (ms epoch) + window length, from the server.
+        this.turnDeadline = null;
+        this.turnTimeoutSeconds = 30;
+    }
+
+    // S3: seconds left on the current turn's deadline (null if none / passed-by).
+    secondsLeft() {
+        if (!this.turnDeadline) return null;
+        return Math.max(0, (this.turnDeadline - Date.now()) / 1000);
     }
 
     getMyIndex() {
@@ -63,6 +72,14 @@ export class Game {
         if (state.turn_player_index !== undefined) this.turnPlayerIndex = state.turn_player_index;
         if (state.turn_step !== undefined) this.turnStep = state.turn_step;
         if (state.players !== undefined) this.players = state.players;
+        // S3: AFK turn deadline. Parse the server's ISO-8601 UTC string into a
+        // local epoch (ms) for countdown math; null clears any prior deadline.
+        if (state.turn_deadline !== undefined) {
+            this.turnDeadline = state.turn_deadline ? Date.parse(state.turn_deadline) : null;
+        }
+        if (state.turn_timeout_seconds !== undefined) {
+            this.turnTimeoutSeconds = state.turn_timeout_seconds;
+        }
     }
 
     reorderHand(oldIndex, newIndex) {

@@ -668,6 +668,16 @@ export class GameController {
             this._animSince = null;
         }
 
+        // S3: tick the turn countdown ~2x/sec while a deadline is pending, so
+        // the #turn-indicator seconds stay live between server state pushes.
+        if (this.game && this.game.turnDeadline) {
+            const now = performance.now();
+            if (!this._lastTurnTick || now - this._lastTurnTick > 500) {
+                this._lastTurnTick = now;
+                try { this.ui.updateTurnIndicator(this.game); } catch (e) { /* best-effort */ }
+            }
+        }
+
         if (this.inputHandler) this.inputHandler.animate();
         if (this.renderer) this.renderer.render();
     }

@@ -4,10 +4,12 @@ import logging
 import random
 import time  # S4: monotonic clock for WS rate-limiting
 from dataclasses import dataclass
+from datetime import timedelta
 
 from channels.generic.websocket import AsyncWebsocketConsumer
 from asgiref.sync import sync_to_async
 from django.db import transaction
+from django.utils import timezone
 
 from .models import Player, Game, GameAction
 from .logic import HumanPlayer, AIPlayer
@@ -19,6 +21,8 @@ from .logic import (
     is_winning,
     claim_discard_index,
 )
+# S3: pure auto-act decision for the turn timer (PICK -> draw, DISCARD -> safe card).
+from .logic import auto_act_decision
 from .rules import Card, is_sequence, is_tunnela, is_dublee
 from . import emotes  # F1: gesture allowlist (is_valid_gesture) + F2: quick-chat phrases
 
@@ -45,6 +49,13 @@ class GameConsumer(AsyncWebsocketConsumer):
     MAX_MESSAGE_BYTES = 16 * 1024       # 16 KiB; real messages are well under 1 KiB
     RATE_LIMIT_MAX = 40                 # max messages...
     RATE_LIMIT_WINDOW = 5.0             # ...per this many seconds, per connection
+
+    # S3: per-turn deadline for HUMAN players. If a human doesn't act within
+    # this many seconds the server auto-acts for them (pick from deck in PICK,
+    # safe discard in DISCARD) so a slow/disconnected player can't stall the
+    # table. One pending timer task per room, mirroring the ai_tasks pattern.
+    TURN_TIMEOUT_SECONDS = 30
+    turn_timers = {}  # room_name -> asyncio.Task
 
     # type -> (handler method name, message fields to pass positionally)
     DISPATCH = {
@@ -94,6 +105,12 @@ class GameConsumer(AsyncWebsocketConsumer):
         if self.player_name:
             await self._set_joined(self.player_name, False)
         await self.channel_layer.group_discard(self.room_group_name, self.channel_name)
+        # S3: a disconnecting human is exactly the AFK case the timer guards
+        # against. Leave the timer running so it auto-acts on their behalf and
+        # keeps play moving; the timer task is room-scoped (not tied to this
+        # socket) so it survives this disconnect. Re-arm the AI driver too in
+        # case the auto-act hands the turn to an AI seat.
+        self._ensure_ai_running()
 
     async def _set_joined(self, player_name, joined):
         try:
@@ -119,11 +136,16 @@ class GameConsumer(AsyncWebsocketConsumer):
         try:
             message = json.loads(json.loads(text_data).get('message', '{}'))
             entry = self.DISPATCH.get(message.get('type'))
+            if message.get('type') == 'get_game_state':
+                # S3: (re)arm the turn timer BEFORE sending state, and without a
+                # broadcast, so this response already carries the fresh deadline
+                # and we don't trigger a get_game_state -> refresh -> get_game_state
+                # storm across clients.
+                self._ensure_ai_running()
+                await self._schedule_turn_timer(broadcast=False)
             if entry:
                 method_name, fields = entry
                 await getattr(self, method_name)(*(message.get(f) for f in fields))
-            if message.get('type') == 'get_game_state':
-                self._ensure_ai_running()
         except Exception:
             logger.exception("Error handling message in room %s", getattr(self, 'room_name', '?'))
 
@@ -154,6 +176,114 @@ class GameConsumer(AsyncWebsocketConsumer):
         task = GameConsumer.ai_tasks.get(self.room_name)
         if task is None or task.done():
             GameConsumer.ai_tasks[self.room_name] = asyncio.create_task(self.handle_ai_turns())
+
+    # --- S3: turn timer / AFK auto-act -------------------------------------
+    def _cancel_turn_timer(self):
+        """Cancel any pending turn timer for this room (action taken / no human)."""
+        task = GameConsumer.turn_timers.pop(self.room_name, None)
+        if task is not None and not task.done():
+            task.cancel()
+
+    async def _schedule_turn_timer(self, broadcast=True):
+        """Start a fresh per-turn deadline when it's a HUMAN's turn.
+
+        Called after every move (via broadcast_action) and on initial state.
+        Cancels any in-flight timer first so each turn gets a clean window
+        (reset each turn, cancel on action). No-op when it's an AI's turn or
+        the game has ended — the AI driver keeps those seats moving.
+
+        ``broadcast`` controls whether we push a ``refresh_state`` so clients
+        pick up the new deadline immediately. It MUST be False on the
+        ``get_game_state`` path: that path already returns the full state
+        (deadline included) to the requester, and a refresh there would make
+        every client re-fetch state, which would re-schedule + re-broadcast
+        again — an unbounded refresh storm (S3 bugfix).
+        """
+        self._cancel_turn_timer()
+        try:
+            game = await sync_to_async(Game.objects.get)(code=self.room_name)
+        except Game.DoesNotExist:
+            return
+        if not game.is_active or game.phase == 'DEALING':
+            await self._clear_deadline(game)
+            return
+        ctx = await self._load_turn_player()
+        if ctx.player.player_type != 'HUMAN':
+            # AI turns are driven by handle_ai_turns; no human deadline.
+            await self._clear_deadline(game)
+            return
+
+        deadline = timezone.now() + timedelta(seconds=self.TURN_TIMEOUT_SECONDS)
+        game.turn_deadline = deadline
+        await sync_to_async(game.save)(update_fields=['turn_deadline'])
+        # Snapshot the seat + step the timer is for, so when it fires we can
+        # confirm the turn never changed and never double-act.
+        GameConsumer.turn_timers[self.room_name] = asyncio.create_task(
+            self._run_turn_timer(ctx.player.id, game.turn_player_index, game.turn_step))
+        # Tell clients the new deadline so they can show a live countdown.
+        # Skipped on the get_game_state path (see docstring) to avoid a storm.
+        if broadcast:
+            await self.broadcast_refresh()
+
+    async def _clear_deadline(self, game):
+        if game.turn_deadline is not None:
+            game.turn_deadline = None
+            await sync_to_async(game.save)(update_fields=['turn_deadline'])
+
+    async def _run_turn_timer(self, player_id, turn_index, turn_step):
+        """Wait out the deadline, then auto-act for the AFK human (no busy-wait)."""
+        try:
+            await asyncio.sleep(self.TURN_TIMEOUT_SECONDS)
+            # Re-load fresh state: only act if the SAME player is still on the
+            # SAME turn/step — i.e. they never acted. This is the never-double-act
+            # guard (a human action cancels this task before we get here anyway).
+            game = await sync_to_async(Game.objects.get)(code=self.room_name)
+            if not game.is_active:
+                return
+            ctx = await self._load_turn_player()
+            # Never-double-act guard: the same player must still be on the SAME
+            # turn AND the SAME step the timer was armed for. turn_step matters
+            # because a human PICK advances PICK->DISCARD without changing the
+            # seat index — if we only checked the index, a timer armed on PICK
+            # could fire and auto-DISCARD right after the human picked, stealing
+            # their discard. (S3 QA bugfix.)
+            if (ctx.player.id != player_id
+                    or game.turn_player_index != turn_index
+                    or game.turn_step != turn_step
+                    or ctx.player.player_type != 'HUMAN'):
+                return  # turn/step moved on; the human acted -> nothing to do
+            await self._auto_act(game, ctx.player, ctx.index, turn_step)
+        except asyncio.CancelledError:
+            # Normal: a real action (or turn change) cancelled us.
+            raise
+        except Exception:
+            logger.exception("Turn timer auto-act failed in room %s", self.room_name)
+        finally:
+            # Whatever happened, re-arm so the (possibly new) current seat gets a
+            # timer and AI seats keep flowing.
+            if GameConsumer.turn_timers.get(self.room_name) is asyncio.current_task():
+                GameConsumer.turn_timers.pop(self.room_name, None)
+            self._ensure_ai_running()
+            await self._schedule_turn_timer()
+
+    async def _auto_act(self, game, player, player_index, turn_step):
+        """Apply the pure auto-act decision for an AFK human via the normal flow."""
+        choice_card = game.visibles[-1] if game.visibles else None
+        jokers = jokers_from_maal(player.hand, game.maal_card)
+        decision = auto_act_decision(
+            turn_step, player.hand, choice_card=choice_card,
+            deck_count=len(game.deck), visibles_count=len(game.visibles), jokers=jokers)
+        if decision is None:
+            logger.warning("Turn timer: no safe auto-act for %s in room %s (step=%s)",
+                           player.name, self.room_name, turn_step)
+            return
+        kind, arg = decision
+        logger.info("Turn timer auto-acting for AFK player %s in room %s: %s %s",
+                    player.name, self.room_name, kind, arg)
+        if kind == 'pick':
+            await self._perform_pick(game, player, player_index, arg, 'player_pick')
+        elif kind == 'discard':
+            await self._perform_discard(game, player, player_index, 'player_discard', card_index=arg)
 
     def run_player_turn(self, player_model, **kwargs):
         player = HumanPlayer(player_model) if player_model.player_type == 'HUMAN' else AIPlayer(player_model)
@@ -206,12 +336,18 @@ class GameConsumer(AsyncWebsocketConsumer):
     async def pick_card(self, player_name, source, target_index):
         ctx = await self._load(player_name, with_players=True)
         if self._is_turn(ctx):
+            # S3: the player acted in time -> cancel the AFK timer before the move
+            # so it can't also fire, then re-arm for the next step/seat after.
+            self._cancel_turn_timer()
             await self._perform_pick(ctx.game, ctx.player, ctx.index, source, 'player_pick', target_index)
+            await self._schedule_turn_timer()
 
     async def discard_card(self, player_name, card_index):
         ctx = await self._load(player_name, with_players=True)
         if self._is_turn(ctx):
+            self._cancel_turn_timer()  # S3: action taken in time
             await self._perform_discard(ctx.game, ctx.player, ctx.index, 'player_discard', card_index)
+            await self._schedule_turn_timer()  # S3: arm next seat's deadline
 
     async def reorder_hand(self, player_name, old_index, new_index):
         ctx = await self._load(player_name)
@@ -384,6 +520,8 @@ class GameConsumer(AsyncWebsocketConsumer):
                 ctx = await self._load_turn_player()
                 if ctx.player.player_type != 'AI':
                     logger.debug("Turn back to human player %s", ctx.player.name)
+                    # S3: control handed back to a human — arm their AFK timer.
+                    await self._schedule_turn_timer()
                     break
 
                 logger.debug("AI turn for %s (seat %s)", ctx.player.name, ctx.index)
@@ -676,6 +814,11 @@ class GameConsumer(AsyncWebsocketConsumer):
             'phase': game.phase,
             'players': players_data,
             'maal_card': visible_maal,
+            # S3: ISO-8601 UTC deadline for the current turn (null when none).
+            # Clients render a live countdown from this; the server is the source
+            # of truth and auto-acts if it lapses.
+            'turn_deadline': game.turn_deadline.isoformat() if game.turn_deadline else None,
+            'turn_timeout_seconds': self.TURN_TIMEOUT_SECONDS,
         }
 
         await self.send(text_data=json.dumps({

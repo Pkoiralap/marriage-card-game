@@ -12,12 +12,16 @@ import asyncio
 import json
 import unittest
 from types import SimpleNamespace
+from unittest import mock
 
+from asgiref.sync import sync_to_async  # S3 (QA): async timer tests
 from django.test import Client, TestCase, TransactionTestCase
+from django.utils import timezone  # S3 (QA)
 
 from game import emotes  # F2
 from game.consumers import GameConsumer, TurnContext
 from game.logic import (
+    auto_act_decision,  # S3
     choose_discard,
     claim_discard_index,
     find_showable_sequences,
@@ -849,6 +853,195 @@ class AILoopProgressTests(TestCase):
         # The loop alternated seats and consumed the deck -> it progressed.
         self.assertIn(0, seats_seen)
         self.assertIn(1, seats_seen)
+
+
+# S3: turn-timer auto-act decision (pure helper). The async timer task only
+# *applies* this decision, so validating the decision here covers the logic.
+class AutoActDecisionTests(unittest.TestCase):
+    HAND = [
+        {"suit": "SPADE", "number": "4", "id": 1},
+        {"suit": "SPADE", "number": "5", "id": 2},
+        {"suit": "HEART", "number": "K", "id": 3},
+    ]
+
+    def test_pick_step_prefers_deck(self):
+        d = auto_act_decision('PICK', self.HAND, choice_card={"suit": "CLUB", "number": "9", "id": 9},
+                              deck_count=20, visibles_count=1)
+        self.assertEqual(d, ('pick', 'deck'))
+
+    def test_pick_step_falls_back_to_choice_when_deck_empty(self):
+        choice = {"suit": "CLUB", "number": "9", "id": 9}
+        d = auto_act_decision('PICK', self.HAND, choice_card=choice,
+                              deck_count=0, visibles_count=1)
+        self.assertEqual(d, ('pick', 'choice'))
+
+    def test_pick_step_none_when_both_piles_empty(self):
+        d = auto_act_decision('PICK', self.HAND, choice_card=None,
+                              deck_count=0, visibles_count=0)
+        self.assertIsNone(d)
+
+    def test_discard_step_returns_choose_discard_index(self):
+        d = auto_act_decision('DISCARD', self.HAND, deck_count=20, visibles_count=1)
+        self.assertEqual(d[0], 'discard')
+        # Must match the AI heuristic exactly (one shared safe-discard path).
+        self.assertEqual(d[1], choose_discard(self.HAND))
+        self.assertTrue(0 <= d[1] < len(self.HAND))
+
+    def test_discard_step_none_on_empty_hand(self):
+        self.assertIsNone(auto_act_decision('DISCARD', []))
+
+    def test_discard_honours_jokers(self):
+        # A jokers set changes the safe discard; decision must track choose_discard.
+        jokers = {1}
+        d = auto_act_decision('DISCARD', self.HAND, jokers=jokers)
+        self.assertEqual(d, ('discard', choose_discard(self.HAND, jokers)))
+
+    def test_unknown_step_is_none(self):
+        self.assertIsNone(auto_act_decision('MAAL', self.HAND, deck_count=5))
+
+
+# S3: the model field + state payload carry the deadline to clients.
+class TurnDeadlineFieldTests(unittest.TestCase):
+    def test_game_has_turn_deadline_field(self):
+        field = Game._meta.get_field('turn_deadline')
+        self.assertTrue(field.null)
+
+    def test_timeout_constant_is_positive(self):
+        self.assertIsInstance(GameConsumer.TURN_TIMEOUT_SECONDS, int)
+        self.assertGreater(GameConsumer.TURN_TIMEOUT_SECONDS, 0)
+
+
+# S3 (QA): consumer-level turn-timer behaviour — scheduling, the no-storm
+# guard on get_game_state, the never-double-act guard, and real auto-act
+# advancing the turn. These exercise the async methods directly via
+# asyncio.run with broadcasts stubbed (no channels layer needed).
+class TurnTimerSchedulingTests(TransactionTestCase):
+    # TransactionTestCase (not TestCase): these methods cross the async/sync
+    # boundary via sync_to_async, which deadlocks against TestCase's wrapping
+    # transaction on SQLite ("database table is locked").
+    def tearDown(self):
+        # Don't leak per-room timer tasks across tests.
+        for code, task in list(GameConsumer.turn_timers.items()):
+            if task is not None and not task.done():
+                task.cancel()
+            GameConsumer.turn_timers.pop(code, None)
+
+    def _consumer(self, code):
+        c = GameConsumer()
+        c.room_name = code
+        c.room_group_name = f"game_{code}"
+        c.player_name = None
+        c._refreshes = 0
+
+        async def _fake_refresh():
+            c._refreshes += 1
+        c.broadcast_refresh = _fake_refresh
+        # Don't spawn the real AI driver (needs channels); count is irrelevant.
+        c._ensure_ai_running = lambda: None
+        # Don't spawn the real long-sleeping timer task (it would be cancelled at
+        # loop teardown and re-fire its re-arm in a closed loop). We only assert
+        # on the schedule call's own behaviour here.
+        c._run_turn_timer = lambda *a, **k: _coro()
+        return c
+
+    def _human_turn_game(self):
+        game = Game.objects.create(
+            num_players=2, code=Game.generate_code(), is_active=True,
+            phase='PLAYING', turn_step='PICK', turn_player_index=0,
+            deck=[_card("CLUB", "3", 9)], visibles=[_card("DIAMOND", "8", 4)])
+        human = Player.objects.create(
+            name="Human", game=game, player_type='HUMAN', is_dealer=True,
+            hand=[_card("SPADE", "4", 1), _card("HEART", "K", 2)])
+        Player.objects.create(name="AI_1", game=game, player_type='AI', hand=[])
+        return game, human
+
+    def test_schedule_no_broadcast_on_get_game_state_path(self):
+        # broadcast=False must NOT push a refresh (prevents the get_game_state ->
+        # refresh -> get_game_state storm) but must still set the deadline.
+        game, human = self._human_turn_game()
+        c = self._consumer(game.code)
+        asyncio.run(c._schedule_turn_timer(broadcast=False))
+        self.assertEqual(c._refreshes, 0)
+        game.refresh_from_db()
+        self.assertIsNotNone(game.turn_deadline)
+        self.assertIsNotNone(GameConsumer.turn_timers.get(game.code))
+
+    def test_schedule_broadcasts_once_when_requested(self):
+        game, human = self._human_turn_game()
+        c = self._consumer(game.code)
+        asyncio.run(c._schedule_turn_timer(broadcast=True))
+        self.assertEqual(c._refreshes, 1)
+
+    def test_schedule_on_ai_turn_clears_deadline_no_timer(self):
+        game, human = self._human_turn_game()
+        game.turn_player_index = 1  # the AI seat
+        game.turn_deadline = timezone.now()
+        game.save()
+        c = self._consumer(game.code)
+        asyncio.run(c._schedule_turn_timer(broadcast=True))
+        game.refresh_from_db()
+        self.assertIsNone(game.turn_deadline)            # cleared
+        self.assertIsNone(GameConsumer.turn_timers.get(game.code))  # no human timer
+        self.assertEqual(c._refreshes, 0)                # nothing to push
+
+    def test_run_timer_does_not_act_when_turn_moved_on(self):
+        # never-double-act guard: if the turn index advanced (the human already
+        # acted), the fired task must re-check fresh state and do nothing.
+        game, human = self._human_turn_game()
+        c = self._consumer(game.code)
+        acted = []
+        c._auto_act = lambda *a, **k: _coro(acted.append(a))
+
+        async def _run():
+            # Snapshot turn_index=0 then advance the game to seat 1 (human acted).
+            game.turn_player_index = 1
+            await sync_to_async(game.save)()
+            with mock.patch.object(GameConsumer, 'TURN_TIMEOUT_SECONDS', 0):
+                # Stub re-arm so the finally block doesn't schedule a new timer.
+                c._schedule_turn_timer = lambda *a, **k: _coro()
+                await c._run_turn_timer(human.id, 0, 'PICK')
+        asyncio.run(_run())
+        self.assertEqual(acted, [])  # stale turn -> no auto-act
+
+    def test_run_timer_does_not_act_when_only_step_moved_on(self):
+        # A human PICK advances PICK->DISCARD WITHOUT changing the seat index.
+        # A timer armed on PICK must NOT then auto-DISCARD (would steal the
+        # human's discard). The guard must compare turn_step, not just index.
+        game, human = self._human_turn_game()
+        c = self._consumer(game.code)
+        acted = []
+        c._auto_act = lambda *a, **k: _coro(acted.append(a))
+
+        async def _run():
+            game.turn_step = 'DISCARD'  # same seat (idx 0), human already picked
+            await sync_to_async(game.save)()
+            with mock.patch.object(GameConsumer, 'TURN_TIMEOUT_SECONDS', 0):
+                c._schedule_turn_timer = lambda *a, **k: _coro()
+                await c._run_turn_timer(human.id, 0, 'PICK')  # armed on PICK
+        asyncio.run(_run())
+        self.assertEqual(acted, [])  # step changed -> no auto-act
+
+    def test_auto_act_pick_advances_turn_step_to_discard(self):
+        # AFK auto-act on PICK must actually draw and move the player to DISCARD.
+        game, human = self._human_turn_game()
+        c = self._consumer(game.code)
+        c.broadcast_action = lambda action: _coro()  # swallow the action broadcast
+        asyncio.run(c._auto_act(game, human, 0, 'PICK'))
+        game.refresh_from_db()
+        self.assertEqual(game.turn_step, 'DISCARD')   # turn progressed
+
+    def test_auto_act_pick_none_when_deck_and_choice_empty(self):
+        game, human = self._human_turn_game()
+        game.deck = []
+        game.visibles = []
+        game.save()
+        c = self._consumer(game.code)
+        called = []
+        c.broadcast_action = lambda action: _coro(called.append(action))
+        asyncio.run(c._auto_act(game, human, 0, 'PICK'))
+        game.refresh_from_db()
+        self.assertEqual(game.turn_step, 'PICK')  # nothing happened, no spin
+        self.assertEqual(called, [])
 
 
 if __name__ == "__main__":

@@ -444,6 +444,20 @@ select.form-control {
     box-shadow: 0 6px 22px rgba(76, 175, 80, 0.4);
 }
 
+/* S3: AFK countdown running low — subtle pulsing warning on the turn pill. */
+#turn-indicator.turn-low {
+    background: linear-gradient(135deg, rgba(229, 115, 64, 0.95), rgba(214, 69, 65, 0.95));
+    border-color: transparent;
+    color: #fff;
+    box-shadow: 0 6px 22px rgba(214, 69, 65, 0.45);
+    animation: turnLowPulse 1s ease-in-out infinite;
+}
+
+@keyframes turnLowPulse {
+    0%, 100% { transform: translateX(-50%) scale(1); }
+    50%      { transform: translateX(-50%) scale(1.06); }
+}
+
 /* Game Log */
 #game-log {
     position: absolute;
