@@ -28,6 +28,9 @@ class Game(models.Model):
     phase = models.CharField(max_length=20, default='DEALING')
     turn_step = models.CharField(max_length=20, default='PICK') # 'PICK', 'DISCARD'
     maal_card = models.JSONField(null=True, blank=True)
+    # S3: deadline (UTC) by which the current turn's player must act before the
+    # server auto-acts for them. Null when no human deadline is pending.
+    turn_deadline = models.DateTimeField(null=True, blank=True)
 
     def __str__(self):
         return self.code or str(self.id)

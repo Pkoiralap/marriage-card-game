@@ -119,6 +119,44 @@ def is_winning(hand, jokers=None):
     return is_winning_hand(hand, jokers or set())
 
 
+# S3: turn-timer / AFK auto-act decision -----------------------------------
+def auto_act_decision(turn_step, hand, choice_card=None, deck_count=0,
+                      visibles_count=0, jokers=None):
+    """Decide the single safe action to take for an AFK player on timeout.
+
+    Pure: depends only on its inputs, so it can be unit-tested without any DB
+    or async machinery. The async timer task only *applies* this decision.
+
+    Returns one of:
+      ('pick', 'deck')              -> draw the hidden deck (default in PICK)
+      ('pick', 'choice')            -> take the visible card (only if deck empty
+                                       but a choice card exists)
+      ('discard', index)            -> discard the safest card (DISCARD step),
+                                       reusing the AI ``choose_discard`` heuristic
+      None                          -> nothing safe/possible to do (e.g. PICK
+                                       with both piles empty, or empty hand)
+
+    PICK: always prefer the deck so we don't reveal intent (mirrors the AI's
+    deck-default); fall back to the visible choice card only if the deck is
+    empty. DISCARD: throw the least-connected / highest-penalty card.
+    """
+    jokers = jokers or set()
+    if turn_step == 'PICK':
+        if deck_count > 0:
+            return ('pick', 'deck')
+        if visibles_count > 0 and choice_card:
+            return ('pick', 'choice')
+        return None  # both piles empty: nothing to pick, can't advance
+    if turn_step == 'DISCARD':
+        if not hand:
+            return None
+        idx = choose_discard(hand, jokers)
+        if idx is None:
+            return None
+        return ('discard', idx)
+    return None
+
+
 def claim_discard_index(hand, jokers=None):
     """Index to discard so the *remaining* cards form a winning hand, else None.
 

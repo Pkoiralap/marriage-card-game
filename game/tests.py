@@ -18,6 +18,7 @@ from django.test import Client, TestCase
 from game import emotes  # F2
 from game.consumers import GameConsumer, TurnContext
 from game.logic import (
+    auto_act_decision,  # S3
     choose_discard,
     claim_discard_index,
     find_showable_sequences,
@@ -769,6 +770,62 @@ class AILoopProgressTests(TestCase):
         # The loop alternated seats and consumed the deck -> it progressed.
         self.assertIn(0, seats_seen)
         self.assertIn(1, seats_seen)
+
+
+# S3: turn-timer auto-act decision (pure helper). The async timer task only
+# *applies* this decision, so validating the decision here covers the logic.
+class AutoActDecisionTests(unittest.TestCase):
+    HAND = [
+        {"suit": "SPADE", "number": "4", "id": 1},
+        {"suit": "SPADE", "number": "5", "id": 2},
+        {"suit": "HEART", "number": "K", "id": 3},
+    ]
+
+    def test_pick_step_prefers_deck(self):
+        d = auto_act_decision('PICK', self.HAND, choice_card={"suit": "CLUB", "number": "9", "id": 9},
+                              deck_count=20, visibles_count=1)
+        self.assertEqual(d, ('pick', 'deck'))
+
+    def test_pick_step_falls_back_to_choice_when_deck_empty(self):
+        choice = {"suit": "CLUB", "number": "9", "id": 9}
+        d = auto_act_decision('PICK', self.HAND, choice_card=choice,
+                              deck_count=0, visibles_count=1)
+        self.assertEqual(d, ('pick', 'choice'))
+
+    def test_pick_step_none_when_both_piles_empty(self):
+        d = auto_act_decision('PICK', self.HAND, choice_card=None,
+                              deck_count=0, visibles_count=0)
+        self.assertIsNone(d)
+
+    def test_discard_step_returns_choose_discard_index(self):
+        d = auto_act_decision('DISCARD', self.HAND, deck_count=20, visibles_count=1)
+        self.assertEqual(d[0], 'discard')
+        # Must match the AI heuristic exactly (one shared safe-discard path).
+        self.assertEqual(d[1], choose_discard(self.HAND))
+        self.assertTrue(0 <= d[1] < len(self.HAND))
+
+    def test_discard_step_none_on_empty_hand(self):
+        self.assertIsNone(auto_act_decision('DISCARD', []))
+
+    def test_discard_honours_jokers(self):
+        # A jokers set changes the safe discard; decision must track choose_discard.
+        jokers = {1}
+        d = auto_act_decision('DISCARD', self.HAND, jokers=jokers)
+        self.assertEqual(d, ('discard', choose_discard(self.HAND, jokers)))
+
+    def test_unknown_step_is_none(self):
+        self.assertIsNone(auto_act_decision('MAAL', self.HAND, deck_count=5))
+
+
+# S3: the model field + state payload carry the deadline to clients.
+class TurnDeadlineFieldTests(unittest.TestCase):
+    def test_game_has_turn_deadline_field(self):
+        field = Game._meta.get_field('turn_deadline')
+        self.assertTrue(field.null)
+
+    def test_timeout_constant_is_positive(self):
+        self.assertIsInstance(GameConsumer.TURN_TIMEOUT_SECONDS, int)
+        self.assertGreater(GameConsumer.TURN_TIMEOUT_SECONDS, 0)
 
 
 if __name__ == "__main__":

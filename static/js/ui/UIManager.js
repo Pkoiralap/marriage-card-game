@@ -322,8 +322,18 @@ export class UIManager {
         const meta = [];
         if (handCount != null) meta.push(`${handCount} cards`);
         if (points != null) meta.push(`${points} pts`);
+        // S3: turn countdown. Server enforces an AFK deadline; show the live
+        // seconds-left and flash a subtle warning when it runs low.
+        const secs = (typeof game.secondsLeft === 'function') ? game.secondsLeft() : null;
+        let low = false;
+        if (secs != null) {
+            const whole = Math.ceil(secs);
+            meta.push(`⏱ ${whole}s`);
+            low = secs <= 10;
+        }
         el.textContent = meta.length ? `${label}  ·  ${meta.join(' · ')}` : label;
         el.classList.toggle('your-turn', myTurn);
+        el.classList.toggle('turn-low', low);  // S3: warning state (CSS pulse)
         el.style.display = 'block';
     }
 

@@ -335,3 +335,53 @@ relays messages between agents when an entry below requests it.
 
 ## Batch-2 Log
 - (orchestrator) Batch 2 launched from master `6bf4436`.
+- (S3 Turn timer / AFK, branch `feat/timer`). Per-turn AFK deadline that
+  auto-acts for a slow/disconnected human so play never stalls.
+  - **Timeout**: `GameConsumer.TURN_TIMEOUT_SECONDS = 30` (single config constant).
+  - **Mechanism (consumers.py, all `# S3`)**: per-room `turn_timers = {}` mirroring
+    `ai_tasks`. `_schedule_turn_timer()` (called after each human pick/discard,
+    on `get_game_state`, and when the AI loop hands back to a human) cancels any
+    in-flight timer, and — only when it's a HUMAN's turn and the game is
+    active/non-DEALING — sets `Game.turn_deadline` and spawns one
+    `_run_turn_timer(player_id, turn_index, turn_step)` task. That task
+    `asyncio.sleep`s the window (no busy-wait), re-loads fresh state, and acts
+    **only if the same player is still on the same turn** (never-double-act
+    guard; a real action cancels the task first via `_cancel_turn_timer()`).
+    `_auto_act` applies the pure decision via the normal `_perform_pick` /
+    `_perform_discard` flow, so the existing action broadcast animates it on
+    every client. The task's `finally` re-arms AI + the next seat's timer.
+    Disconnect leaves the timer running (it's room-scoped) so an AFK/leaving
+    human is auto-acted; it also `_ensure_ai_running()`.
+  - **Auto-act decision (pure, `game/logic.py` `auto_act_decision`)**: PICK ->
+    draw the deck (`('pick','deck')`), falling back to the visible card only if
+    the deck is empty (`('pick','choice')`), `None` if both piles empty;
+    DISCARD -> reuse the AI `choose_discard` heuristic for the safe card
+    (`('discard', idx)`), `None` on empty hand. Unit-tested in isolation.
+  - **Deadline broadcast shape**: `send_game_state` adds to `state`:
+    `turn_deadline` (ISO-8601 UTC string or `null`) and
+    `turn_timeout_seconds` (int). `_schedule_turn_timer` also fires a
+    `broadcast_refresh()` so clients pick up a fresh deadline immediately.
+  - **Client**: `Game.js` parses `turn_deadline` -> epoch ms + `secondsLeft()`;
+    `UIManager.updateTurnIndicator` appends `⏱ Ns` and toggles a `.turn-low`
+    class (≤10s) -> pulsing orange/red pill (`style.css`, `@keyframes
+    turnLowPulse`). `GameController.animate` ticks the indicator ~2x/sec while a
+    deadline is pending (no separate setInterval). Auto-acted moves animate via
+    the existing `player_pick`/`player_discard` broadcast — no new client path.
+  - **Model field / migration**: `Game.turn_deadline = DateTimeField(null=True,
+    blank=True)` -> migration **`0013_game_turn_deadline.py`** (dep
+    `0012_player_avatar`). Orchestrator: resolve multiple `0013_*` with
+    `makemigrations --merge` at merge.
+  - **Tests**: +9 (99 -> 108, all green). `AutoActDecisionTests` (PICK
+    deck/choice/none, DISCARD index matches `choose_discard`, jokers honoured,
+    empty hand, unknown step) + `TurnDeadlineFieldTests` (field nullable, timeout
+    constant positive). The async timer itself is validated by the pure decision
+    layer per the brief. `node --check` clean on all 3 changed JS files.
+  - **Merge risks** — shared `consumers.py` (S1 claim, S2 register_sequence):
+    my edits are additive/`# S3` — new constant + dict near class top, a
+    `# S3: turn timer` method block after `_ensure_ai_running`, two-line
+    cancel+reschedule wraps inside `pick_card`/`discard_card`, a one-line
+    `_schedule_turn_timer()` in the AI loop's human-handback branch, the import
+    line, and two `state` keys. Should conflict-merge cleanly. If S1's claim
+    advances/ends the turn outside the pick/discard handlers, it should call
+    `_cancel_turn_timer()` (or rely on the next `_schedule_turn_timer` to clear
+    the deadline since the game goes inactive — already handled).
