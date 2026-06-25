@@ -96,13 +96,16 @@ class GameConsumer(AsyncWebsocketConsumer):
         try:
             message = json.loads(json.loads(text_data).get('message', '{}'))
             entry = self.DISPATCH.get(message.get('type'))
+            if message.get('type') == 'get_game_state':
+                # S3: (re)arm the turn timer BEFORE sending state, and without a
+                # broadcast, so this response already carries the fresh deadline
+                # and we don't trigger a get_game_state -> refresh -> get_game_state
+                # storm across clients.
+                self._ensure_ai_running()
+                await self._schedule_turn_timer(broadcast=False)
             if entry:
                 method_name, fields = entry
                 await getattr(self, method_name)(*(message.get(f) for f in fields))
-            if message.get('type') == 'get_game_state':
-                self._ensure_ai_running()
-                # S3: (re)arm the turn timer in case it's a human's turn now.
-                await self._schedule_turn_timer()
         except Exception:
             logger.exception("Error handling message in room %s", getattr(self, 'room_name', '?'))
 
@@ -141,13 +144,20 @@ class GameConsumer(AsyncWebsocketConsumer):
         if task is not None and not task.done():
             task.cancel()
 
-    async def _schedule_turn_timer(self):
+    async def _schedule_turn_timer(self, broadcast=True):
         """Start a fresh per-turn deadline when it's a HUMAN's turn.
 
         Called after every move (via broadcast_action) and on initial state.
         Cancels any in-flight timer first so each turn gets a clean window
         (reset each turn, cancel on action). No-op when it's an AI's turn or
         the game has ended — the AI driver keeps those seats moving.
+
+        ``broadcast`` controls whether we push a ``refresh_state`` so clients
+        pick up the new deadline immediately. It MUST be False on the
+        ``get_game_state`` path: that path already returns the full state
+        (deadline included) to the requester, and a refresh there would make
+        every client re-fetch state, which would re-schedule + re-broadcast
+        again — an unbounded refresh storm (S3 bugfix).
         """
         self._cancel_turn_timer()
         try:
@@ -171,7 +181,9 @@ class GameConsumer(AsyncWebsocketConsumer):
         GameConsumer.turn_timers[self.room_name] = asyncio.create_task(
             self._run_turn_timer(ctx.player.id, game.turn_player_index, game.turn_step))
         # Tell clients the new deadline so they can show a live countdown.
-        await self.broadcast_refresh()
+        # Skipped on the get_game_state path (see docstring) to avoid a storm.
+        if broadcast:
+            await self.broadcast_refresh()
 
     async def _clear_deadline(self, game):
         if game.turn_deadline is not None:
@@ -189,11 +201,18 @@ class GameConsumer(AsyncWebsocketConsumer):
             if not game.is_active:
                 return
             ctx = await self._load_turn_player()
+            # Never-double-act guard: the same player must still be on the SAME
+            # turn AND the SAME step the timer was armed for. turn_step matters
+            # because a human PICK advances PICK->DISCARD without changing the
+            # seat index — if we only checked the index, a timer armed on PICK
+            # could fire and auto-DISCARD right after the human picked, stealing
+            # their discard. (S3 QA bugfix.)
             if (ctx.player.id != player_id
                     or game.turn_player_index != turn_index
+                    or game.turn_step != turn_step
                     or ctx.player.player_type != 'HUMAN'):
-                return  # turn moved on; nothing to do
-            await self._auto_act(game, ctx.player, ctx.index, game.turn_step)
+                return  # turn/step moved on; the human acted -> nothing to do
+            await self._auto_act(game, ctx.player, ctx.index, turn_step)
         except asyncio.CancelledError:
             # Normal: a real action (or turn change) cancelled us.
             raise
