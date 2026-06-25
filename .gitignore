@@ -11,3 +11,6 @@ venv
 .gemini/
 state.png
 .claude/
+
+# S4: collectstatic output (regenerated in prod, never committed)
+staticfiles/

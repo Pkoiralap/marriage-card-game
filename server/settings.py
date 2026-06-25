@@ -17,18 +17,35 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 
-# Quick-start development settings - unsuitable for production
-# See https://docs.djangoproject.com/en/6.0/howto/deployment/checklist/
+# S4: env-driven, dev-safe defaults. Local dev / Docker keep working with no env
+# vars set; production overrides via the environment (see deployment checklist).
+
+def _env_bool(name, default):
+    val = os.environ.get(name)
+    if val is None:
+        return default
+    return val.strip().lower() in ("1", "true", "yes", "on")
+
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = "django-insecure-ye)u(c7ku67fctb*mgycyhuj8#m$-#hmw4&w02th$4az&!051_"
+# Falls back to the insecure dev key only when SECRET_KEY isn't set. Set
+# SECRET_KEY in the environment for any non-local deployment.
+SECRET_KEY = os.environ.get(
+    "SECRET_KEY",
+    "django-insecure-ye)u(c7ku67fctb*mgycyhuj8#m$-#hmw4&w02th$4az&!051_",
+)
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+# Defaults to True for dev; set DEBUG=0 (or false/no/off) in prod.
+DEBUG = _env_bool("DEBUG", True)
 
+# Comma-separated host list from ALLOWED_HOSTS env; defaults keep localhost and
+# the LAN IP working for local play. e.g. ALLOWED_HOSTS="example.com,1.2.3.4"
+_default_hosts = "192.168.1.22,localhost,127.0.0.1"
 ALLOWED_HOSTS = [
-    "192.168.1.22",
-    "localhost"
+    h.strip()
+    for h in os.environ.get("ALLOWED_HOSTS", _default_hosts).split(",")
+    if h.strip()
 ]
 
 
@@ -37,6 +54,10 @@ ALLOWED_HOSTS = [
 INSTALLED_APPS = [
     "daphne",
     "game",
+    # S4: let WhiteNoise (not Django's dev static handler) serve static under
+    # runserver too, so dev and prod take the same code path. Must precede
+    # django.contrib.staticfiles.
+    "whitenoise.runserver_nostatic",
     "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
@@ -76,6 +97,11 @@ else:
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
+    # S4: WhiteNoise serves static files directly (must sit right after
+    # SecurityMiddleware). It serves STATIC_ROOT under runserver too, so the
+    # no-cache gap (NoCacheStaticMiddleware didn't fire for runserver's static
+    # handler) is closed and the same path works after `collectstatic` in prod.
+    "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
@@ -152,6 +178,33 @@ USE_TZ = True
 
 STATIC_URL = "static/"
 STATICFILES_DIRS = [BASE_DIR / "static"]
+
+# S4: WhiteNoise static serving.
+# - STATIC_ROOT is where `collectstatic` writes for prod; WhiteNoise serves it.
+# - In DEBUG we use the finders so WhiteNoise serves straight from
+#   STATICFILES_DIRS with no collectstatic step (dev stays zero-config), and we
+#   disable max-age caching so stale ES modules never get cached.
+# - In prod, CompressedManifestStaticFilesStorage hashes + gzips/brotlis assets
+#   (run `collectstatic` first); WhiteNoise then serves them with far-future
+#   cache headers safely (filenames are content-hashed).
+STATIC_ROOT = BASE_DIR / "staticfiles"
+WHITENOISE_USE_FINDERS = DEBUG
+WHITENOISE_AUTOREFRESH = DEBUG
+if DEBUG:
+    WHITENOISE_MAX_AGE = 0
+
+STORAGES = {
+    "default": {
+        "BACKEND": "django.core.files.storage.FileSystemStorage",
+    },
+    "staticfiles": {
+        "BACKEND": (
+            "whitenoise.storage.CompressedManifestStaticFilesStorage"
+            if not DEBUG
+            else "django.contrib.staticfiles.storage.StaticFilesStorage"
+        ),
+    },
+}
 
 # Matches the BigAutoField that migration 0010 set for GameAction, so the
 # auto-PK isn't re-detected as a model change on every makemigrations.

@@ -1,5 +1,4 @@
 import { FAN_RADIUS, FAN_SPACING, HAND_CENTER_POS, CHOICE_POS, DISCARD_ZONE_RADIUS } from '../utils/Constants.js';
-import { hud } from '../utils/Hud.js';
 
 export class InputHandler {
     constructor(renderer, game, callbacks) {
@@ -54,10 +53,6 @@ export class InputHandler {
         // Any touch means this is a touch device: permanently disable the mouse
         // drag path so iOS's synthesized mouse events can't start phantom drags.
         this.usingTouch = true;
-        hud.enable();
-        const tgt = event.target;
-        const pt = this.getEventPoint(event);
-        hud.set('touch', `${tgt && tgt.tagName || '?'}#${tgt && tgt.id || ''} @${Math.round(pt.x)},${Math.round(pt.y)}`);
 
         // Let taps on HTML controls (buttons, inputs, modals, side panels)
         // behave normally so clicks still fire there.
@@ -66,7 +61,6 @@ export class InputHandler {
                 + '#game-log, #game-controls, #sequence-controls, #shown-sequences-container');
         if (onControl) {
             this._touchActive = false;
-            hud.set('route', 'HTML control (passthrough)');
             return;
         }
         // A game-surface touch: take over the gesture and run the tap model.
@@ -94,9 +88,8 @@ export class InputHandler {
 
     // Tap model: first tap selects/arms, second tap on the same target acts.
     onTap(event) {
-        hud.set('tap', `myTurn=${this.game.me ? this.game.isMyTurn() : '?'} wait=${this.isWaitingForServer} step=${this.game.turnStep}`);
-        if (!this.game.me || this.isWaitingForServer) { hud.set('route', 'ignored (no me / waiting)'); return; }
-        if (!this.game.isMyTurn()) { hud.set('route', 'ignored (not your turn)'); return; }
+        if (!this.game.me || this.isWaitingForServer) { return; }
+        if (!this.game.isMyTurn()) { return; }
 
         const p = this.getEventPoint(event);
         this.mouse.x = (p.x / window.innerWidth) * 2 - 1;
@@ -105,7 +98,6 @@ export class InputHandler {
 
         // 1) Hand cards
         const handIntersects = this.raycaster.intersectObjects(this.renderer.cardsGroup.children);
-        hud.set('route', handIntersects.length ? `hit hand card #${handIntersects[0].object.userData.index}` : 'no hand hit');
         if (handIntersects.length > 0) {
             const index = handIntersects[0].object.userData.index;
 

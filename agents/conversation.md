@@ -406,3 +406,102 @@ relays messages between agents when an entry below requests it.
     that weren't yet covered). No source changes — feature was already correct.
   - **Merge notes:** unchanged from S2 entry. QA touched only `game/rules/tests.py`
     (appended) + this log; no conflict surface added.
+- (S4 Prod hardening + HUD removal) `feat/hardening`. All shared-file edits `# S4`/`// S4`.
+  - **Debug HUD removed entirely.** Deleted `static/js/utils/Hud.js`. Removed the
+    `import { hud }` lines + the `?hud` URL gate (`GameController` constructor) and
+    every `hud.enable()`/`hud.set(...)` call across `GameController.js` (queue/err/
+    diagnostics block — the whole `// Diagnostics LAST` try/catch was HUD-only and
+    is gone, `applyState` logic intact) and `InputHandler.js` (`onTouchStart`,
+    `onTap`, hand-hit routing — touch/tap logic intact). `Renderer.js` had **no**
+    hud references. Verified: `grep -rn "hud\|Hud"` over `static/js`, `templates`,
+    `server`, `game` returns NONE (the one Avatar.js `ease` match is unrelated);
+    `node --check` passes on all 3 changed JS files.
+  - **Settings hardening (env-driven, dev-safe defaults)** in `server/settings.py`:
+    - `SECRET_KEY` from `SECRET_KEY` env; falls back to the existing insecure dev
+      key when unset.
+    - `DEBUG` from `DEBUG` env via `_env_bool` (accepts 1/true/yes/on); **default
+      True** for dev. Docker's `DEBUG=1` still works.
+    - `ALLOWED_HOSTS` from comma-separated `ALLOWED_HOSTS` env; **default**
+      `"192.168.1.22,localhost,127.0.0.1"` (added 127.0.0.1) so local/LAN play is
+      unchanged. Verified `manage.py check` passes both in dev defaults and with
+      `DEBUG=0 SECRET_KEY=... ALLOWED_HOSTS=example.com,1.2.3.4`.
+  - **WhiteNoise static** (new dep `whitenoise>=6.0,<7` in `requirements.txt`):
+    added `whitenoise.middleware.WhiteNoiseMiddleware` right after
+    `SecurityMiddleware`; `whitenoise.runserver_nostatic` in INSTALLED_APPS (before
+    `staticfiles`) so dev and prod take the same serving path. New `STATIC_ROOT =
+    BASE_DIR/"staticfiles"` (gitignored). In DEBUG: `WHITENOISE_USE_FINDERS=True` +
+    `WHITENOISE_AUTOREFRESH=True` + `WHITENOISE_MAX_AGE=0` → serves straight from
+    `STATICFILES_DIRS` with no collectstatic and no aggressive caching (closes the
+    stale-ES-module gap that summary.md noted — `NoCacheStaticMiddleware` never
+    fired under runserver; it's left in place, harmless). In prod (DEBUG off):
+    `STORAGES["staticfiles"]` uses `whitenoise.storage.CompressedManifestStaticFilesStorage`
+    → content-hashed + gzipped assets after `collectstatic`, served `immutable`.
+    Verified end-to-end: dev runserver serves `/static/...` 200 (revalidates via
+    Last-Modified); `collectstatic` produces hashed names + `.gz` + manifest;
+    hashed files served `Cache-Control: max-age=315360000, public, immutable`.
+  - **Light WS safeguard** in `GameConsumer` (`consumers.py`, additive `# S4`):
+    `receive` now drops frames > `MAX_MESSAGE_BYTES` (16 KiB) and rate-limits to
+    `RATE_LIMIT_MAX`=40 msgs / `RATE_LIMIT_WINDOW`=5s per connection via a sliding
+    window (`_msg_times`, monotonic clock). Tuned well above normal play (a few
+    msgs/sec) so it never trips for real users; both are no-ops on the happy path.
+  - **Tests**: `manage.py test game` → **99 passed** (unchanged count, green);
+    `manage.py check` clean (dev + prod env). Installed `whitenoise` into the local
+    venv so check/test import it.
+  - **Merge risks**:
+    - `server/settings.py` — overlaps any S# that touches settings (none expected);
+      the INSTALLED_APPS / MIDDLEWARE / STATIC blocks are additive and `# S4`-marked.
+    - `game/consumers.py` — S1 (claim), S2 (register_sequence), S3 (timer) all edit
+      this file. S4's edits are localized to the class header (constants), `connect`
+      (init `_msg_times` + `_rate_limited` helper) and the top of `receive` (guards
+      before the existing body) — no handler/DISPATCH changes, so conflicts should
+      be trivial.
+    - `GameController.js` / `InputHandler.js` — HUD-line removals. S1/S3 may also
+      touch `GameController.js`; conflicts are only where their edits sit next to a
+      removed `hud.set(...)` line. `Renderer.js` was listed in the brief but had no
+      HUD code, so it's untouched here.
+- (QA S4 Prod hardening + HUD removal) Reviewed `feat/hardening` @ `f34b21f`
+  (`git diff origin/master...HEAD`), tested thoroughly. **PASS — no bugs found; no
+  code changes needed.** Verified each axis:
+  - **HUD removal — clean, no dangling refs.** `Hud.js` deleted (404s under
+    runserver). `grep -rni hud` over `static/js`/`templates`/`server`/`game` →
+    only two unrelated hits: a UIManager comment ("in-game HUD: turn indicator" —
+    the F4 turn pill, not the debug module) and `Avatar.js` `ease`. No orphan
+    `import { hud }` / `Hud.js` references anywhere. The merged `onTap` guard
+    (`if (!me||waiting) return; if (!isMyTurn()) return;`) and the `if (onControl)`
+    passthrough kept their bodies; `applyState` ends cleanly at
+    `updateTurnIndicator` (the whole HUD-only `Diagnostics LAST` try/catch is
+    gone, no half-removed `if`). `processQueues` recover-path intact.
+    `node --check` clean on both changed JS files.
+  - **Settings.** `os` is imported (used by `_env_bool`/`os.environ`).
+    `manage.py check` clean in dev defaults, Docker `DEBUG=1`, and prod-style
+    `DEBUG=0 SECRET_KEY=x ALLOWED_HOSTS=example.com`. `--deploy` only shows the
+    standard HSTS/SSL/short-key warnings (out of S4 scope, expected with the
+    `x` test key). `_env_bool` parses `1/true/yes/on` (+ case/whitespace) → True
+    and `0/false/no/off/''/garbage` → False; unset → default. LAN/local hosts
+    (`192.168.1.22,localhost,127.0.0.1`) preserved. `STORAGES["default"]` keeps
+    FileSystemStorage; staticfiles backend switches on DEBUG correctly.
+  - **WhiteNoise.** Middleware sits immediately after `SecurityMiddleware`;
+    `runserver_nostatic` precedes `staticfiles` in INSTALLED_APPS. Dev runserver
+    serves `/static/...` → 200 `text/javascript`, `Last-Modified` revalidate,
+    no `max-age` (`WHITENOISE_MAX_AGE=0`). `collectstatic --noinput` → 144 copied,
+    432 post-processed, producing content-hashed names + `.gz` + `staticfiles.json`
+    manifest, no errors. `staticfiles/` is gitignored (`git check-ignore` OK).
+    Cleaned up after. ASGI/`routing.py` untouched — WS path unaffected (channels
+    protocol router, not the Django MIDDLEWARE stack).
+  - **WS rate-limit.** Simulated `_rate_limited` exactly: normal play (5–8
+    msgs/sec sustained) → 0 drops; a 45-frame rapid burst drops at index 40
+    (41st onward); window recovers after 5s. Per-connection `_msg_times` init'd in
+    `connect`, plus a `getattr` re-init guard. `receive` guards (`None` /
+    oversize / rate) all `return` before any `json.loads`, so they can't crash or
+    wedge the consumer. Monotonic clock used. No false positives for legitimate
+    pick/discard/gesture/chat bursts.
+  - **Tests:** `manage.py test game` → **99 passed** in BOTH dev defaults and
+    prod-env (`DEBUG=0 SECRET_KEY=... ALLOWED_HOSTS=...`); `manage.py check` clean
+    in both. Test count unchanged (99).
+  - **Merge notes:** confirms S4's own notes. HUD-removal overlap with S1/S3 on
+    `GameController.js`/`InputHandler.js` is limited to lines adjacent to removed
+    `hud.set(...)` calls — trivial to resolve (take S4's removal, keep S1/S3's
+    additions). `settings.py` is additive/`# S4`-marked and overlaps no other S#.
+    `consumers.py` S4 edits (class constants, `connect` init, top-of-`receive`
+    guards, `_rate_limited` helper) don't touch DISPATCH/handlers, so they sit
+    cleanly alongside S1/S2/S3 edits.
