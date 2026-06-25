@@ -10,6 +10,7 @@ from .rules import (
     find_meld_partition,
     is_winning_hand,
     unmelded_points,
+    maal_joker_ids,  # S2
 )
 
 
@@ -23,18 +24,12 @@ from .rules import (
 def jokers_from_maal(hand, maal_card):
     """Card ids in ``hand`` that act as wild (jokers).
 
-    In Marriage the maal/tiplu *face* is wild. The rules engine identifies
-    jokers by card id, so we translate: every physical copy in hand whose
-    suit+rank matches the maal face is a joker id. Returns an empty set when
-    no maal has been revealed yet.
+    S2: delegates to ``rules.maal_joker_ids`` so the AI, the show-validator and
+    win/claim checks all derive jokers from the *same* rule — the tiplu plus its
+    relatives (poplu, jhiplu, alternate tiplu). See ``game/rules/jokers.py`` for
+    the variant assumptions. Returns an empty set when no maal is revealed yet.
     """
-    if not maal_card:
-        return set()
-    suit, number = maal_card.get('suit'), maal_card.get('number')
-    return {
-        c['id'] for c in hand
-        if c.get('suit') == suit and c.get('number') == number and c.get('id') is not None
-    }
+    return maal_joker_ids(hand, maal_card)
 
 
 def _hand_cards(hand):

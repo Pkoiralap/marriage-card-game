@@ -13,7 +13,7 @@ import json
 import unittest
 from types import SimpleNamespace
 
-from django.test import Client, TestCase
+from django.test import Client, TestCase, TransactionTestCase
 
 from game import emotes  # F2
 from game.consumers import GameConsumer, TurnContext
@@ -493,6 +493,70 @@ class AIShowAndWinTests(unittest.TestCase):
         self.assertEqual(find_showable_tunnelas(hand), [])
 
 
+class RegisterSequenceMaalTests(TransactionTestCase):
+    """S2: register_sequence accepts dirty (joker-filled) sequences once the
+    maal is revealed, but stays pure-only before it.
+
+    TransactionTestCase (not TestCase): register_sequence reaches the DB via
+    ``sync_to_async`` on a worker thread, which deadlocks against TestCase's
+    wrapping atomic transaction on sqlite."""
+
+    def _consumer(self, room):
+        c = GameConsumer()
+        c.room_name = room
+        c.sent = []
+        c.rejects = []
+
+        async def fake_broadcast_action(action):
+            c.sent.append(action)
+
+        async def fake_send_reject(action_type, message):
+            c.rejects.append((action_type, message))
+
+        c.broadcast_action = fake_broadcast_action
+        c.send_reject = fake_send_reject
+        return c
+
+    def _run(self, coro):
+        return asyncio.new_event_loop().run_until_complete(coro)
+
+    def _game(self, hand, maal=None):
+        game = Game.objects.create(
+            num_players=1, code=Game.generate_code(), deck=[], visibles=[],
+            turn_step='PICK', maal_card=maal)
+        player = Player.objects.create(name="P1", game=game, player_type='HUMAN', hand=hand)
+        return game, player
+
+    def test_dirty_sequence_rejected_before_maal(self):
+        # 5H _ 7H with the 9S standing in, but no maal -> not wild -> rejected.
+        hand = [_card("HEART", "5", 1), _card("HEART", "7", 2), _card("SPADE", "9", 3)]
+        game, _ = self._game(hand, maal=None)
+        c = self._consumer(game.code)
+        self._run(c.register_sequence("P1", 0, [0, 1, 2]))
+        self.assertEqual(c.sent, [])
+        self.assertEqual(len(c.rejects), 1)
+        self.assertEqual(c.rejects[0][0], 'SHOW_SEQUENCE_FAILED')
+
+    def test_dirty_sequence_accepted_with_maal(self):
+        # maal = 9S -> the 9S in hand is the tiplu (wild) and fills the gap.
+        hand = [_card("HEART", "5", 1), _card("HEART", "7", 2), _card("SPADE", "9", 3)]
+        game, _ = self._game(hand, maal=_card("SPADE", "9", 99))
+        c = self._consumer(game.code)
+        self._run(c.register_sequence("P1", 0, [0, 1, 2]))
+        self.assertEqual(c.rejects, [])
+        self.assertEqual(len(c.sent), 1)
+        self.assertEqual(c.sent[0]['type'], 'SHOW_SEQUENCE_SUCCESS')
+
+    def test_pure_sequence_still_accepted_before_maal(self):
+        hand = [_card("HEART", "5", 1), _card("HEART", "6", 2), _card("HEART", "7", 3)]
+        game, _ = self._game(hand, maal=None)
+        c = self._consumer(game.code)
+        self._run(c.register_sequence("P1", 0, [0, 1, 2]))
+        self.assertEqual(c.rejects, [])
+        self.assertEqual(len(c.sent), 1)
+        self.assertEqual(c.sent[0]['type'], 'SHOW_SEQUENCE_SUCCESS')
+
+
 class AIPlayerTurnTests(TestCase):
     """End-to-end AIPlayer pick+discard through the model layer (no channels)."""
 
@@ -558,7 +622,23 @@ class JokersFromMaalTests(unittest.TestCase):
         hand = [
             _card("HEART", "7", 1), _card("HEART", "7", 2), _card("SPADE", "7", 3),
         ]
+        # SPADE 7 is black; the alternate tiplu of a red 7 is DIAMOND 7, so the
+        # SPADE 7 is NOT wild — only the two tiplu copies are.
         self.assertEqual(jokers_from_maal(hand, maal), {1, 2})
+
+    def test_relatives_are_wild(self):
+        # S2: tiplu + poplu + jhiplu + alternate tiplu are all jokers now,
+        # consistent with the rules-engine derivation.
+        maal = _card("HEART", "7", 99)
+        hand = [
+            _card("HEART", "7", 1),     # tiplu
+            _card("HEART", "8", 2),     # poplu
+            _card("HEART", "6", 3),     # jhiplu
+            _card("DIAMOND", "7", 4),   # alternate tiplu (same colour)
+            _card("SPADE", "7", 5),     # not wild
+            _card("CLUB", "K", 6),      # not wild
+        ]
+        self.assertEqual(jokers_from_maal(hand, maal), {1, 2, 3, 4})
 
 
 # F3 (QA): a finished, winning 21-card hand — two pure spade/heart runs plus

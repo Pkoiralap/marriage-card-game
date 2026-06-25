@@ -180,5 +180,127 @@ class ScoringTests(unittest.TestCase):
         self.assertEqual(unmelded_points(cards), 10 + 2 + 9)
 
 
+# S2: maal/tiplu joker derivation -------------------------------------------
+from game.rules import maal_joker_faces, maal_joker_ids
+
+
+class MaalJokerFaceTests(unittest.TestCase):
+    def test_tiplu_poplu_jhiplu_alternate(self):
+        # maal = 7 of HEART -> tiplu 7H, poplu 8H, jhiplu 6H, alt 7D (red pair).
+        faces = maal_joker_faces({"suit": "HEART", "number": "7"})
+        self.assertEqual(
+            faces,
+            {("HEART", "7"), ("HEART", "8"), ("HEART", "6"), ("DIAMOND", "7")},
+        )
+
+    def test_alternate_is_same_colour_other_suit(self):
+        # SPADE (black) -> CLUB; DIAMOND (red) -> HEART.
+        self.assertIn(("CLUB", "5"), maal_joker_faces({"suit": "SPADE", "number": "5"}))
+        self.assertIn(("HEART", "5"), maal_joker_faces({"suit": "DIAMOND", "number": "5"}))
+
+    def test_rank_wraps_at_king_and_ace(self):
+        # tiplu = K -> poplu wraps to A; jhiplu = Q.
+        k = maal_joker_faces({"suit": "CLUB", "number": "K"})
+        self.assertIn(("CLUB", "A"), k)   # poplu
+        self.assertIn(("CLUB", "Q"), k)   # jhiplu
+        # tiplu = A -> jhiplu wraps to K; poplu = 2.
+        a = maal_joker_faces({"suit": "CLUB", "number": "A"})
+        self.assertIn(("CLUB", "K"), a)   # jhiplu
+        self.assertIn(("CLUB", "2"), a)   # poplu
+
+    def test_accepts_card_object(self):
+        faces = maal_joker_faces(Card(suit="SPADE", rank="9"))
+        self.assertEqual(
+            faces,
+            {("SPADE", "9"), ("SPADE", "10"), ("SPADE", "8"), ("CLUB", "9")},
+        )
+
+    def test_empty_before_maal(self):
+        self.assertEqual(maal_joker_faces(None), set())
+        self.assertEqual(maal_joker_faces({}), set())
+
+
+class MaalJokerIdTests(unittest.TestCase):
+    def test_maps_hand_ids_to_jokers(self):
+        maal = {"suit": "HEART", "number": "7"}
+        hand = [
+            {"suit": "HEART", "number": "7", "id": 1},    # tiplu
+            {"suit": "HEART", "number": "8", "id": 2},    # poplu
+            {"suit": "HEART", "number": "6", "id": 3},    # jhiplu
+            {"suit": "DIAMOND", "number": "7", "id": 4},  # alternate tiplu
+            {"suit": "SPADE", "number": "7", "id": 5},    # not wild (wrong colour)
+            {"suit": "HEART", "number": "9", "id": 6},    # not wild
+        ]
+        self.assertEqual(maal_joker_ids(hand, maal), {1, 2, 3, 4})
+
+    def test_empty_before_maal(self):
+        hand = [{"suit": "HEART", "number": "7", "id": 1}]
+        self.assertEqual(maal_joker_ids(hand, None), set())
+
+    def test_ignores_cards_without_id(self):
+        maal = {"suit": "CLUB", "number": "3"}
+        hand = [{"suit": "CLUB", "number": "3"}]  # no id
+        self.assertEqual(maal_joker_ids(hand, maal), set())
+
+    def test_duplicate_faces_across_decks_all_map(self):
+        # S2: three physical decks -> the same wild face can appear multiple
+        # times; every copy's id must be flagged, not just the first.
+        maal = {"suit": "HEART", "number": "7"}
+        hand = [
+            {"suit": "HEART", "number": "7", "id": 1},    # tiplu copy A
+            {"suit": "HEART", "number": "7", "id": 2},    # tiplu copy B
+            {"suit": "DIAMOND", "number": "7", "id": 3},  # alt-tiplu copy A
+            {"suit": "DIAMOND", "number": "7", "id": 4},  # alt-tiplu copy B
+        ]
+        self.assertEqual(maal_joker_ids(hand, maal), {1, 2, 3, 4})
+
+    def test_mixed_dict_and_card_hand(self):
+        # S2: callers may pass a hand mixing wire dicts and Card objects
+        # (e.g. AI probes append a Card to a dict hand). Both must resolve.
+        maal = {"suit": "HEART", "number": "7"}
+        hand = [
+            {"suit": "HEART", "number": "8", "id": 10},   # poplu (dict)
+            Card(suit="HEART", rank="6", id=11),          # jhiplu (Card)
+            Card(suit="SPADE", rank="7", id=12),          # not wild (wrong colour)
+        ]
+        self.assertEqual(maal_joker_ids(hand, maal), {10, 11})
+
+
+class DirtySequenceWithMaalTests(unittest.TestCase):
+    def test_pure_only_before_maal(self):
+        # 5H, 7H + a wild stand-in, but no maal yet -> jokers empty -> rejected.
+        cards = [C("5", "HEART", 1), C("7", "HEART", 2), C("9", "SPADE", 3)]
+        jokers = maal_joker_ids(
+            [c.to_dict() for c in cards], None
+        )
+        self.assertEqual(jokers, set())
+        self.assertFalse(is_sequence(cards, jokers))
+
+    def test_dirty_sequence_accepted_with_maal(self):
+        # maal = 9 of SPADE. The 9S in hand is the tiplu (wild). It fills the
+        # gap in 5H-_-7H to make 5H-6H-7H.
+        maal = {"suit": "SPADE", "number": "9"}
+        cards = [C("5", "HEART", 1), C("7", "HEART", 2), C("9", "SPADE", 3)]
+        jokers = maal_joker_ids([c.to_dict() for c in cards], maal)
+        self.assertEqual(jokers, {3})
+        self.assertTrue(is_sequence(cards, jokers))
+
+    def test_winning_hand_uses_same_jokers(self):
+        maal = {"suit": "SPADE", "number": "9"}
+        # 21 cards: one dirty sequence + two pure sequences.
+        dirty = [C("5", "HEART", 10), C("7", "HEART", 11), C("9", "SPADE", 12)]
+        pure1 = [C("4", "CLUB", 20), C("5", "CLUB", 21), C("6", "CLUB", 22)]
+        pure2 = [C("J", "DIAMOND", 30), C("Q", "DIAMOND", 31), C("K", "DIAMOND", 32)]
+        pure3 = [C("2", "SPADE", 40), C("3", "SPADE", 41), C("4", "SPADE", 42)]
+        # NB: 9C would be the alternate tiplu of 9S (wild), so use a clean run.
+        pure4 = [C("4", "DIAMOND", 50), C("5", "DIAMOND", 51), C("6", "DIAMOND", 52)]
+        pure5 = [C("10", "HEART", 60), C("J", "HEART", 61), C("Q", "HEART", 62)]
+        pure6 = [C("A", "DIAMOND", 70), C("2", "DIAMOND", 71), C("3", "DIAMOND", 72)]
+        hand = dirty + pure1 + pure2 + pure3 + pure4 + pure5 + pure6
+        jokers = maal_joker_ids([c.to_dict() for c in hand], maal)
+        self.assertEqual(jokers, {12})
+        self.assertTrue(is_winning_hand(hand, jokers, min_pure=1))
+
+
 if __name__ == "__main__":
     unittest.main()

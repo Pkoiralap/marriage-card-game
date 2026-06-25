@@ -335,3 +335,74 @@ relays messages between agents when an entry below requests it.
 
 ## Batch-2 Log
 - (orchestrator) Batch 2 launched from master `6bf4436`.
+- (S2 Maal/joker rules) `feat/maal`. Modeled the maal (tiplu) + relatives as
+  jokers as a single source of truth in the rules engine, wired into the
+  show-validator and the AI so humans and AI agree on jokers (fixes the F3-noted
+  "register_sequence and AI disagree on jokers").
+  - **New module `game/rules/jokers.py`** (pure, framework-free). Public API
+    (also re-exported from `game.rules`):
+    - `maal_joker_faces(maal_card) -> set[(suit, rank)]` — the wild faces.
+    - `maal_joker_ids(hand, maal_card) -> set[int]` — maps a hand's card
+      ids/dicts to the joker-id set the meld validators expect.
+    Accepts a `Card`, a wire/DB dict (`{'suit','number',...}`), or falsy
+    (-> empty set = pure-only before maal).
+  - **Derivation rule (variant: maal + relatives).** Given the maal (tiplu),
+    four faces are wild: **tiplu** (maal face), **poplu** (tiplu rank +1, same
+    suit, wraps K->A), **jhiplu** (tiplu rank -1, same suit, wraps A->K), and
+    **alternate tiplu** (same rank, the other suit of the *same colour*:
+    HEART<->DIAMOND, SPADE<->CLUB). No printed jokers in this deck; the hook to
+    add them lives in `maal_joker_faces`. **Other features should call
+    `rules.maal_joker_ids(hand, maal_card)`** (or `logic.jokers_from_maal`, which
+    now just delegates) — do NOT re-derive jokers by hand.
+  - **`game/logic.py`**: `jokers_from_maal` now delegates to
+    `rules.maal_joker_ids` (no behaviour change for the AI except relatives are
+    now wild). All AI win/claim/show paths already route through it, so they pick
+    up relatives automatically.
+  - **`game/consumers.py` (`# S2`, additive, 1 line + comment)**:
+    `register_sequence` now validates with
+    `is_sequence(card_objs, jokers_from_maal(hand, game.maal_card))` — accepts
+    dirty (joker-filled) sequences once the maal is revealed; before the maal is
+    set the joker set is empty so it stays pure-only as today.
+  - **Tests**: 99 -> 114 green. `game/rules/tests.py` (pure: tiplu/poplu/
+    jhiplu/alt identification, K/A wrap, id mapping, dirty-sequence acceptance,
+    winning-hand parity). `game/tests.py` (`jokers_from_maal` relatives;
+    `RegisterSequenceMaalTests` — dirty rejected before maal / accepted after /
+    pure still accepted). No JS, no migrations, no model fields.
+  - **Merge risks**: `consumers.py register_sequence` — one-line change (added a
+    `jokers` arg to `is_sequence`); trivial unless S1/S3 also edit that method.
+    `logic.py jokers_from_maal` body replaced (delegates now) — conflicts only if
+    F3/AI work re-touches that function. `rules/melds.py` UNCHANGED (joker logic
+    lives in the new `jokers.py`). `rules/tests.py` and `game/tests.py` appended.
+    `RegisterSequenceMaalTests` is a `TransactionTestCase` (sync_to_async +
+    sqlite would deadlock under plain TestCase).
+
+## QA Log
+- (S2 QA, `feat/maal`) Reviewed `git diff origin/master...HEAD` and stress-tested
+  the maal/joker feature. **No real bugs found** — derivation, validator, and
+  parity are all correct. Verdict: ship.
+  - **Derivation correctness (verified for every rank + wraps):** tiplu=A ->
+    jhiplu wraps to K, poplu=2; tiplu=K -> poplu wraps to A, jhiplu=Q; 2/10/J/Q
+    all correct. Exactly 4 distinct wild faces. **Alternate** mapping is exactly
+    HEART<->DIAMOND, SPADE<->CLUB (same-colour partner, not suit-adjacent) for all
+    four suits.
+  - **`maal_joker_ids`:** correct for Card, wire/DB dict, None/empty/`{}`/`[]`
+    (-> empty = pure-only), id-less cards (skipped), and a mixed dict+Card hand.
+    Duplicate wild faces across the 3 decks ALL map to ids (not just the first).
+  - **Validator:** before maal -> joker set empty -> pure-only (joker-filled
+    "sequence" rejected); after maal -> right dirty sequences pass, genuinely
+    invalid ones still fail. Same-suit enforced on naturals; gap bounded by joker
+    count (jokers can't legalise a too-wide run); distinct-rank enforced; a joker
+    can't exceed its count. No tunnela/dublee regression (they ignore jokers via
+    `same_face`). Bad maal input (unknown suit/rank, garbage) degrades to empty
+    with no crash.
+  - **Parity (the stated F3 fix) confirmed:** human show (`consumers.register_sequence`),
+    AI show (`find_showable_sequences`), AI claim (`claim_discard_index`), and AI
+    win (`is_winning_hand`) all route through `jokers_from_maal` ->
+    `rules.maal_joker_ids`, called with the player's own hand + `game.maal_card`
+    (a JSONField card dict). Identical derivation -> cannot disagree.
+  - **Tests:** 114 -> **116** green. Added two `# S2` additive regression tests to
+    `game/rules/tests.py::MaalJokerIdTests`: `test_duplicate_faces_across_decks_all_map`
+    and `test_mixed_dict_and_card_hand` (locking down the two prompt-flagged cases
+    that weren't yet covered). No source changes — feature was already correct.
+  - **Merge notes:** unchanged from S2 entry. QA touched only `game/rules/tests.py`
+    (appended) + this log; no conflict surface added.

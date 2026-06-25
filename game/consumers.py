@@ -190,7 +190,11 @@ class GameConsumer(AsyncWebsocketConsumer):
         cards, card_objs = self._select_cards(player_model.hand, card_indices)
         if card_objs is None:
             return await self.send_reject('SHOW_SEQUENCE_FAILED', "Invalid card selection.")
-        if not is_sequence(card_objs):
+        # S2: once the maal is revealed, accept dirty (joker-filled) sequences
+        # using the shared tiplu+relatives derivation. Before the maal is set
+        # the joker set is empty, so this stays pure-only as before.
+        jokers = jokers_from_maal(player_model.hand, ctx.game.maal_card)
+        if not is_sequence(card_objs, jokers):
             return await self.send_reject('SHOW_SEQUENCE_FAILED', "These cards don't form a sequence.")
 
         # Record the shown sequence (cards stay in hand until all three are done).
