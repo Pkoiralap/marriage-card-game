@@ -7,11 +7,11 @@ export class Renderer {
         this.container = container;
         this.scene = new THREE.Scene();
         this.scene.background = new THREE.Color(0x2c3e50);
-        
+
         this.activeAnimations = [];
         this.markers = [];
         this.avatars = [];   // procedural opponent avatars (idle-animated each frame)
-        
+
         this.cardsGroup = new THREE.Group();
         this.opponentsGroup = new THREE.Group();
         this.deckGroup = new THREE.Group();
@@ -25,10 +25,10 @@ export class Renderer {
         this.initRenderer();
         this.initLights();
         this.initTable();
-        
+
         this.interactionPlane = this.createInteractionPlane();
         this.scene.add(this.interactionPlane);
-        
+
         window.addEventListener('resize', this.onWindowResize.bind(this), false);
     }
 
@@ -39,22 +39,22 @@ export class Renderer {
         // Bug 1: keep the centered diagonal (equal X and Z, like the original) so
         // the view stays centred, but LOWER the elevation to ~19deg so the player
         // looks across the table at the opponents at eye level instead of top-down.
-        this.camera.position.set(26, 15, 26);
+        this.camera.position.set(26, 19, 26);
         this.camera.lookAt(0, 5, 0);
     }
 
     initRenderer() {
         this.threeRenderer = new THREE.WebGLRenderer({ antialias: true });
         this.threeRenderer.setSize(window.innerWidth, window.innerHeight);
-        this.threeRenderer.setPixelRatio(window.devicePixelRatio); 
+        this.threeRenderer.setPixelRatio(window.devicePixelRatio);
         this.threeRenderer.shadowMap.enabled = true;
         this.container.appendChild(this.threeRenderer.domElement);
     }
 
     initLights() {
-        const ambientLight = new THREE.AmbientLight(0xffffff, 0.5); 
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
         this.scene.add(ambientLight);
-        const dirLight = new THREE.DirectionalLight(0xffffff, 0.7); 
+        const dirLight = new THREE.DirectionalLight(0xffffff, 0.7);
         dirLight.position.set(20, 40, 20);
         dirLight.castShadow = true;
         // Adjust shadow camera for better shadow quality
@@ -72,7 +72,7 @@ export class Renderer {
         table.position.y = -0.5;
         table.receiveShadow = true;
         this.scene.add(table);
-        
+
         const borderGeometry = new THREE.TorusGeometry(TABLE_RADIUS, 0.8, 16, 100);
         const borderMaterial = new THREE.MeshLambertMaterial({ color: 0x5e3023 });
         const border = new THREE.Mesh(borderGeometry, borderMaterial);
@@ -82,7 +82,7 @@ export class Renderer {
         // Add visual markers for Deck and Choice
         const markerGeo = new THREE.PlaneGeometry(CARD_WIDTH + 0.5, CARD_HEIGHT + 0.5);
         const markerMat = new THREE.MeshBasicMaterial({ color: 0x1e8449, transparent: true, opacity: 0.5, side: THREE.DoubleSide });
-        
+
         const deckMarker = new THREE.Mesh(markerGeo, markerMat);
         deckMarker.position.set(DECK_POS.x, 0.01, DECK_POS.z);
         deckMarker.rotation.x = -Math.PI / 2;
@@ -108,8 +108,8 @@ export class Renderer {
     createInteractionPlane() {
         const plane = new THREE.Mesh(
             new THREE.PlaneGeometry(2000, 2000),
-            new THREE.MeshBasicMaterial({ 
-                visible: false, 
+            new THREE.MeshBasicMaterial({
+                visible: false,
                 side: THREE.DoubleSide,
                 transparent: true,
                 depthWrite: false // CRITICAL: prevent it from blocking depth
@@ -139,14 +139,14 @@ export class Renderer {
 
             // Smoother easing: easeInOutSine
             const t = -(Math.cos(Math.PI * progress) - 1) / 2;
-            
+
             anim.mesh.position.lerpVectors(anim.startPos, anim.targetPos, t);
-            
+
             // Arc up - ensure it is additive to the height to prevent dipping
             const baseArcHeight = 6;
             const currentArc = Math.sin(t * Math.PI) * baseArcHeight;
             anim.mesh.position.y += currentArc;
-            
+
             // Rotate from start to target (interpolated)
             const finalTargetQuat = anim.targetQuat || this.camera.quaternion;
             anim.mesh.quaternion.slerpQuaternions(anim.startQuat, finalTargetQuat, t);
@@ -168,7 +168,7 @@ export class Renderer {
     updateCards(meshes) {
         // Differential update to prevent flicker
         const newMeshesSet = new Set(meshes);
-        
+
         // Remove meshes that are not in the new list
         for (let i = this.cardsGroup.children.length - 1; i >= 0; i--) {
             const child = this.cardsGroup.children[i];
@@ -176,7 +176,7 @@ export class Renderer {
                 this.cardsGroup.remove(child);
             }
         }
-        
+
         // Add meshes that are not in the group yet
         const existingMeshesSet = new Set(this.cardsGroup.children);
         meshes.forEach(mesh => {
@@ -190,9 +190,9 @@ export class Renderer {
         if (stockPileCount === undefined || isNaN(stockPileCount)) stockPileCount = 0;
         const stackHeight = Math.min(20, Math.ceil(stockPileCount / 5));
         if (this.deckGroup.children.filter(m => m.userData.type === 'deck').length === stackHeight) {
-             // Still need to update maal card position if deck height changes
-             this.updateMaalCardPosition();
-             return;
+            // Still need to update maal card position if deck height changes
+            this.updateMaalCardPosition();
+            return;
         }
         this.deckGroup.children.filter(m => m.userData.type === 'deck').forEach(m => this.deckGroup.remove(m));
 
@@ -200,7 +200,7 @@ export class Renderer {
         const backTexture = createCardBackTexture(this.threeRenderer);
         const sideMaterial = new THREE.MeshBasicMaterial({ color: 0xeeeeee });
         const backMaterial = new THREE.MeshBasicMaterial({ map: backTexture, transparent: true });
-        
+
         // Materials: index 5 is -Z (Back when flat)
         const materials = [sideMaterial, sideMaterial, sideMaterial, sideMaterial, sideMaterial, backMaterial];
 
@@ -216,7 +216,7 @@ export class Renderer {
 
     updateMaalCard(cardData) {
         if (!cardData) return;
-        
+
         let mesh = this.deckGroup.children.find(m => m.userData.type === 'maal');
         const sideMaterial = new THREE.MeshBasicMaterial({ color: 0xeeeeee });
         const backMaterial = new THREE.MeshBasicMaterial({ map: createCardBackTexture(this.threeRenderer), transparent: true });
@@ -289,7 +289,7 @@ export class Renderer {
                 const texture = createCardTexture(cardData.number, cardData.suit, color, this.threeRenderer);
                 const frontMaterial = new THREE.MeshBasicMaterial({ map: texture, transparent: true });
                 const materials = [sideMaterial, sideMaterial, sideMaterial, sideMaterial, frontMaterial, backMaterial];
-                
+
                 mesh = new THREE.Mesh(geometry, materials);
                 mesh.position.copy(targetPos);
                 mesh.rotation.copy(targetRot);
@@ -302,10 +302,10 @@ export class Renderer {
 
     animateCard(sourcePos, targetPos, cardData, isFaceDown, onComplete, targetQuat = null, sourceQuat = null, existingMesh = null) {
         let mesh = existingMesh;
-        
+
         const sideMaterial = new THREE.MeshBasicMaterial({ color: 0xeeeeee });
         const backMaterial = new THREE.MeshBasicMaterial({ map: createCardBackTexture(this.threeRenderer), transparent: true });
-        
+
         let frontMaterial;
         if (cardData && !isFaceDown) {
             const color = (cardData.suit === 'HEART' || cardData.suit === 'DIAMOND') ? 'red' : 'black';
@@ -325,7 +325,7 @@ export class Renderer {
         }
 
         mesh.renderOrder = 1000; // Always in front
-        
+
         // Ensure mesh is in animation group and has correct starting transform
         if (mesh.parent) mesh.parent.remove(mesh);
         this.animationGroup.add(mesh);
@@ -340,7 +340,7 @@ export class Renderer {
                 mesh.rotation.x = -Math.PI / 2; // Face up
             }
         }
-        
+
         const anim = {
             mesh,
             startTime: performance.now(),
@@ -352,7 +352,7 @@ export class Renderer {
             onComplete,
             isFaceDown
         };
-        
+
         this.activeAnimations.push(anim);
     }
 
@@ -368,7 +368,7 @@ export class Renderer {
 
     highlightMesh(mesh, color) {
         if (!mesh || !mesh.material) return;
-        
+
         // MeshBasicMaterial doesn't have emissive. 
         // Let's highlight by changing the color of the side materials (indices 0-3)
         // or just the front/back if we want a full glow.
@@ -423,26 +423,29 @@ export class Renderer {
         }
     }
 
-    // A small static arc-fan of card backs standing UPRIGHT in front of an
-    // avatar (like a person holding a fanned hand), turned to face the camera
-    // horizontally. Vertical so it reads as "held up", not lying on the table.
-    // Decorative — the exact count isn't gameplay-significant for opponents.
-    _addHeldCardFan(pos, backTexture, count = 11) {
-        const geo = new THREE.BoxGeometry(1.15, 1.6, 0.04);
+    // A static fan of card backs held UPRIGHT in front of an avatar, like a
+    // real hand of cards: all 21 backs pivoting about a grip point near the
+    // bottom, heavily overlapping so only a sliver of each card shows, turned
+    // by yaw to face the camera so the fan stays vertical (not lying flat).
+    _addHeldCardFan(pos, backTexture, count = 21) {
+        const geo = new THREE.BoxGeometry(1.6, 2.3, 0.04);
         const mat = new THREE.MeshStandardMaterial({ map: backTexture });
 
         const up = new THREE.Vector3(0, 1, 0);
-        // Anchor a bit in front of the avatar (toward centre), raised up near the
-        // avatar's face so it looks like cards held up in front of them.
-        const anchor = new THREE.Vector3(pos.x * 0.74, 4.0, pos.z * 0.74);
+        // Anchor in front of the avatar (toward centre), raised to chest/face
+        // height so it reads as cards held up in front of them.
+        const anchor = new THREE.Vector3(pos.x * 0.72, 4.2, pos.z * 0.72);
         // Face the camera but only by yaw, so the fan stays vertical/upright.
         const toCam = new THREE.Vector3(this.camera.position.x - anchor.x, 0, this.camera.position.z - anchor.z).normalize();
         const right = new THREE.Vector3().crossVectors(up, toCam).normalize();   // horizontal
         const basis = new THREE.Matrix4().makeBasis(right, up, toCam);
         const baseQuat = new THREE.Quaternion().setFromRotationMatrix(basis);
 
-        const radius = 4.0;     // arc radius
-        const spread = 0.14;    // radians between adjacent cards
+        // Pivot/grip sits below the anchor by `radius`; each card rotates about
+        // it. Small per-card angle so all 21 fit in a graceful ~80deg arc with
+        // a real hand's tight overlap (only a strip of each back is visible).
+        const radius = 5.6;     // grip-to-centre distance (controls arc curvature)
+        const spread = 0.072;   // radians between adjacent cards
         const mid = (count - 1) / 2;
         for (let j = 0; j < count; j++) {
             const a = (j - mid) * spread;
@@ -451,7 +454,7 @@ export class Renderer {
             card.position.copy(anchor)
                 .addScaledVector(right, radius * Math.sin(a))
                 .addScaledVector(up, radius * (Math.cos(a) - 1))
-                .addScaledVector(toCam, j * 0.02);   // layer toward camera, avoid z-fight
+                .addScaledVector(toCam, j * 0.012);  // layer toward camera, avoid z-fight
             // Stand upright facing the camera, then splay each card by rolling it
             // about its own normal.
             const roll = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), -a);
@@ -475,13 +478,13 @@ export class Renderer {
     getOpponentPosition(index, totalOpponents = 3) {
         const totalPlayers = totalOpponents + 1;
         const angleStep = (Math.PI * 2) / totalPlayers;
-        const offset = Math.PI/totalPlayers;
-        
+        const offset = Math.PI / totalPlayers;
+
         const angle = (-Math.PI / 2) + (index + 1) * angleStep + offset;
-        
+
         const x = Math.cos(angle) * OPPONENT_TABLE_RADIUS * 0.9;
         // In Three.js, negative Z is 'up' (away from camera)
-        const z = -Math.sin(angle) * OPPONENT_TABLE_RADIUS * 0.9; 
+        const z = -Math.sin(angle) * OPPONENT_TABLE_RADIUS * 0.9;
         return new THREE.Vector3(x, 0, z);
     }
 }
