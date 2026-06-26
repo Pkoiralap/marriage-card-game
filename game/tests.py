@@ -967,11 +967,17 @@ class TurnTimerSchedulingTests(TransactionTestCase):
         self.assertIsNotNone(game.turn_deadline)
         self.assertIsNotNone(GameConsumer.turn_timers.get(game.code))
 
-    def test_schedule_broadcasts_once_when_requested(self):
+    def test_schedule_never_broadcasts(self):
+        # S3 perf: scheduling no longer pushes its own refresh (the deadline
+        # rides on the move's existing broadcast + the get_game_state response),
+        # so a pick/discard isn't doubled into two full client refreshes.
         game, human = self._human_turn_game()
         c = self._consumer(game.code)
         asyncio.run(c._schedule_turn_timer(broadcast=True))
-        self.assertEqual(c._refreshes, 1)
+        self.assertEqual(c._refreshes, 0)
+        game.refresh_from_db()
+        self.assertIsNotNone(game.turn_deadline)            # deadline still set
+        self.assertIsNotNone(GameConsumer.turn_timers.get(game.code))  # timer armed
 
     def test_schedule_on_ai_turn_clears_deadline_no_timer(self):
         game, human = self._human_turn_game()

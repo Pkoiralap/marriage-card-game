@@ -140,12 +140,15 @@ class GameConsumer(AsyncWebsocketConsumer):
             message = json.loads(json.loads(text_data).get('message', '{}'))
             entry = self.DISPATCH.get(message.get('type'))
             if message.get('type') == 'get_game_state':
-                # S3: (re)arm the turn timer BEFORE sending state, and without a
-                # broadcast, so this response already carries the fresh deadline
-                # and we don't trigger a get_game_state -> refresh -> get_game_state
-                # storm across clients.
                 self._ensure_ai_running()
-                await self._schedule_turn_timer(broadcast=False)
+                # S3 perf: only arm from the state path when NO timer is live
+                # (fresh connect / reconnect). The action handlers + AI handback
+                # arm it on turn changes; re-arming on every state fetch churned
+                # the DB/task and pushed the deadline forward each refresh, which
+                # added a visible lag to every pick/discard.
+                t = GameConsumer.turn_timers.get(self.room_name)
+                if t is None or t.done():
+                    await self._schedule_turn_timer()
             if entry:
                 method_name, fields = entry
                 await getattr(self, method_name)(*(message.get(f) for f in fields))
@@ -223,10 +226,10 @@ class GameConsumer(AsyncWebsocketConsumer):
         # confirm the turn never changed and never double-act.
         GameConsumer.turn_timers[self.room_name] = asyncio.create_task(
             self._run_turn_timer(ctx.player.id, game.turn_player_index, game.turn_step))
-        # Tell clients the new deadline so they can show a live countdown.
-        # Skipped on the get_game_state path (see docstring) to avoid a storm.
-        if broadcast:
-            await self.broadcast_refresh()
+        # S3 perf: no separate broadcast here. The move that triggered this already
+        # called broadcast_action -> broadcast_refresh, and get_game_state sets the
+        # deadline before sending state, so clients receive it without a second
+        # full refresh per move (`broadcast` kept for signature compat, unused).
 
     async def _clear_deadline(self, game):
         if game.turn_deadline is not None:
