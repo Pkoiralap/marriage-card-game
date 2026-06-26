@@ -84,14 +84,8 @@ def maal_joker_faces(maal_card) -> set[tuple[str, str]]:
     return faces
 
 
-def maal_joker_ids(hand, maal_card) -> set[int]:
-    """Card ids in ``hand`` whose face is wild given ``maal_card``.
-
-    ``hand`` is an iterable of card dicts (DB/wire format) or :class:`Card`s.
-    Returns an empty set when the maal is unrevealed. This is what the meld
-    validators expect as their ``jokers`` argument.
-    """
-    faces = maal_joker_faces(maal_card)
+def _ids_for_faces(hand, faces: set[tuple[str, str]]) -> set[int]:
+    """Card ids in ``hand`` whose ``(suit, rank)`` face is in ``faces``."""
     if not faces:
         return set()
     ids: set[int] = set()
@@ -105,3 +99,39 @@ def maal_joker_ids(hand, maal_card) -> set[int]:
         if cid is not None and (suit, rank) in faces:
             ids.add(cid)
     return ids
+
+
+def maal_joker_ids(hand, maal_card) -> set[int]:
+    """Card ids in ``hand`` whose face is wild given ``maal_card``.
+
+    ``hand`` is an iterable of card dicts (DB/wire format) or :class:`Card`s.
+    Returns an empty set when the maal is unrevealed. This is what the meld
+    validators expect as their ``jokers`` argument.
+    """
+    return _ids_for_faces(hand, maal_joker_faces(maal_card))
+
+
+def claim_joker_faces(maal_card) -> set[tuple[str, str]]:
+    """Wild faces for a CLAIM — broader than :func:`maal_joker_faces`.
+
+    Per the claim house rule (only applies when claiming, not on the initial
+    sequence reveal): EVERY card of the maal's rank is a joker regardless of
+    suit, AND the maal-suit neighbours (poplu/jhiplu) also act as placeholders.
+
+    e.g. maal 4♣ -> {4♠, 4♥, 4♣, 4♦, 3♣, 5♣}.
+    """
+    face = _coerce_face(maal_card)
+    if face is None:
+        return set()
+    suit, rank = face
+    if suit not in SUITS or rank not in RANKS:
+        return set()
+    faces = {(s, rank) for s in SUITS}             # all suits of the maal rank
+    faces.add((suit, _shifted_rank(rank, +1)))     # poplu
+    faces.add((suit, _shifted_rank(rank, -1)))     # jhiplu
+    return faces
+
+
+def claim_joker_ids(hand, maal_card) -> set[int]:
+    """Card ids in ``hand`` that are wild for a CLAIM (see claim_joker_faces)."""
+    return _ids_for_faces(hand, claim_joker_faces(maal_card))

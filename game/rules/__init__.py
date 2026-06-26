@@ -19,6 +19,7 @@ from .melds import (
     MIN_SEQUENCE,
     TUNNELA_SIZE,
     find_meld_partition,
+    is_dirty_sequence,  # bug: claim-only dirty meld validator (sets/runs/tunnela)
     is_dublee,
     is_pure_sequence,
     is_sequence,
@@ -38,19 +39,24 @@ from .scoring import (
     unmelded_points,
 )
 # S2: maal/tiplu joker derivation (single source of truth).
-from .jokers import maal_joker_faces, maal_joker_ids
+from .jokers import (
+    claim_joker_faces,  # bug: broader wild set for claims (all same-rank suits)
+    claim_joker_ids,
+    maal_joker_faces,
+    maal_joker_ids,
+)
 
 __all__ = [
     # cards
     "Card", "to_cards", "SUITS", "RANKS", "RED_SUITS", "SUIT_SYMBOLS", "ACE_HIGH",
     # melds
     "is_sequence", "is_pure_sequence", "is_tunnela", "is_dublee", "is_valid_meld",
-    "find_meld_partition", "is_winning_hand",
+    "is_dirty_sequence", "find_meld_partition", "is_winning_hand",
     "MIN_SEQUENCE", "TUNNELA_SIZE", "DUBLEE_SIZE",
     # scoring
     "card_points", "hand_points", "unmelded_points", "DEFAULT_POINT_VALUES",
     # jokers (S2)
-    "maal_joker_faces", "maal_joker_ids",
+    "maal_joker_faces", "maal_joker_ids", "claim_joker_faces", "claim_joker_ids",
     # scoring/claim (S1)
     "is_winning_claim", "can_claim", "round_penalty", "round_scores", "DEFAULT_MAX_ROUND_PENALTY",
 ]

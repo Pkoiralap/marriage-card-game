@@ -302,5 +302,56 @@ class DirtySequenceWithMaalTests(unittest.TestCase):
         self.assertTrue(is_winning_hand(hand, jokers, min_pure=1))
 
 
+from game.rules import is_dirty_sequence, claim_joker_ids
+
+
+class ClaimDirtySequenceTests(unittest.TestCase):
+    """The claim-only dirty meld validator (sets / runs / tunnelas + wilds).
+
+    Mirrors the house rule the user specified: same-rank-different-suit SETS
+    are valid (unlike the initial reveal), and every same-rank card is wild.
+    """
+
+    def test_set_same_rank_distinct_suits(self):
+        # 4C 4H 4S — all different suits, same value -> valid.
+        self.assertTrue(is_dirty_sequence(
+            [C("4", "CLUB", 1), C("4", "HEART", 2), C("4", "SPADE", 3)]))
+
+    def test_set_rejects_duplicate_suit(self):
+        # 4C 4H 4H — duplicate suit, no wilds -> NOT valid.
+        self.assertFalse(is_dirty_sequence(
+            [C("4", "CLUB", 1), C("4", "HEART", 2), C("4", "HEART", 3)], set()))
+
+    def test_normal_run_valid(self):
+        self.assertTrue(is_dirty_sequence(
+            [C("3", "CLUB", 1), C("4", "CLUB", 2), C("5", "CLUB", 3)]))
+
+    def test_tunnela_valid(self):
+        self.assertTrue(is_dirty_sequence(
+            [C("4", "CLUB", 1), C("4", "CLUB", 2), C("4", "CLUB", 3)]))
+
+    def test_maal_and_joker_as_placeholders(self):
+        # maal = 4C. Jokers = every 4 (any suit) + 3C/5C. So 7D + maal + joker
+        # (two wilds + one natural) validates as a dirty group.
+        maal = {"suit": "CLUB", "number": "4"}
+        cards = [C("7", "DIAMOND", 20), C("4", "CLUB", 1), C("4", "HEART", 2)]
+        jokers = claim_joker_ids([c.to_dict() for c in cards], maal)
+        self.assertEqual(jokers, {1, 2})
+        self.assertTrue(is_dirty_sequence(cards, jokers))
+
+    def test_claim_jokers_cover_all_same_rank(self):
+        maal = {"suit": "CLUB", "number": "4"}
+        hand = [C("4", "CLUB", 1), C("4", "HEART", 2), C("4", "SPADE", 3),
+                C("4", "DIAMOND", 4), C("3", "CLUB", 5), C("5", "CLUB", 6),
+                C("9", "HEART", 7)]
+        jokers = claim_joker_ids([c.to_dict() for c in hand], maal)
+        self.assertEqual(jokers, {1, 2, 3, 4, 5, 6})  # all 4s + 3C + 5C, not 9H
+
+    def test_initial_reveal_still_rejects_sets(self):
+        # The same-rank set must NOT be accepted by the reveal-time validator.
+        cards = [C("4", "CLUB", 1), C("4", "HEART", 2), C("4", "SPADE", 3)]
+        self.assertFalse(is_valid_meld(cards))
+
+
 if __name__ == "__main__":
     unittest.main()

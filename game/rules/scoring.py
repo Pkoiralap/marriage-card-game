@@ -47,7 +47,7 @@ def unmelded_points(cards, jokers: set[int] | None = None,
 
 # S1: --- claim validation + round scoring (pure, framework-free) -----------
 def is_winning_claim(shown_groups, hand, jokers: set[int] | None = None,
-                     min_pure: int = 1, meld_size: int = 3) -> bool:
+                     min_pure: int = 1, meld_size: int = 3, validator=None) -> bool:
     """True if a player's *whole* holding forms a winning hand.
 
     A Marriage hand is split between melds already laid down on the table
@@ -62,11 +62,12 @@ def is_winning_claim(shown_groups, hand, jokers: set[int] | None = None,
     for group in (shown_groups or []):
         flat.extend(group)
     flat.extend(hand or [])
-    return is_winning_hand(flat, jokers, min_pure=min_pure, meld_size=meld_size)
+    return is_winning_hand(flat, jokers, min_pure=min_pure, meld_size=meld_size,
+                           validator=validator)
 
 
 def can_claim(shown_groups, hand, jokers: set[int] | None = None,
-              min_pure: int = 1, meld_size: int = 3) -> bool:
+              min_pure: int = 1, meld_size: int = 3, validator=None) -> bool:
     """True if the player can claim by setting aside exactly ONE card.
 
     Marriage wins by melding everything and discarding the final card, so a
@@ -81,7 +82,8 @@ def can_claim(shown_groups, hand, jokers: set[int] | None = None,
         return False
     for i in range(len(hand)):
         rest = flat_shown + hand[:i] + hand[i + 1:]
-        if is_winning_hand(rest, jokers, min_pure=min_pure, meld_size=meld_size):
+        if is_winning_hand(rest, jokers, min_pure=min_pure, meld_size=meld_size,
+                           validator=validator):
             return True
     return False
 

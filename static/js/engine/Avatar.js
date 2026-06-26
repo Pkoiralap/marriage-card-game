@@ -261,9 +261,15 @@ export class Avatar {
         ctx.fillText(String(text).slice(0, 16), 128, 56);
         const tex = new THREE.CanvasTexture(canvas);
         if (!this.labelSprite) {
-            this.labelSprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true }));
+            // depthTest/Write off + a high renderOrder so the bubble draws ON TOP
+            // of the head/hat geometry instead of being occluded by it, and sit it
+            // well above the tallest headwear (party hat / antenna reach ~3.9 local).
+            this.labelSprite = new THREE.Sprite(new THREE.SpriteMaterial({
+                map: tex, transparent: true, depthTest: false, depthWrite: false,
+            }));
             this.labelSprite.scale.set(2.4, 1.2, 1);
-            this.labelSprite.position.y = 3.6;
+            this.labelSprite.position.y = 4.8;
+            this.labelSprite.renderOrder = 10000;
             this.group.add(this.labelSprite);
         } else {
             this.labelSprite.material.map.dispose();

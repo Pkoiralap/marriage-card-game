@@ -113,7 +113,8 @@ export class InputHandler {
             if (this.game.turnStep === 'DISCARD') {
                 if (this.armedHandIndex === index) {
                     const mesh = handIntersects[0].object;
-                    const sent = this.callbacks.discardCard(index, mesh.position.clone(), mesh.quaternion.clone());
+                    const cardId = mesh.userData.card && mesh.userData.card.id;
+                    const sent = this.callbacks.discardCard(index, mesh.position.clone(), mesh.quaternion.clone(), cardId);
                     if (sent) {
                         this.isWaitingForServer = true;
                         this.lockedDiscardMesh = mesh;
@@ -199,8 +200,10 @@ export class InputHandler {
         if (this.usingTouch) return;  // touch device: ignore synthesized mouse
         if (!this.game.me || this.isWaitingForServer) return;
 
-        // Block all interaction if it's not our turn
-        if (!this.game.isMyTurn()) return;
+        // NOTE: we intentionally do NOT block off-turn here. Picking up a hand
+        // card to reorder it is allowed at any time (the player can organise
+        // their hand while others play); only PICK from deck/choice and DISCARD
+        // are turn-gated (see the deck branch below and onMouseUp).
 
         // Seed the pointer from this event: on touch there is no preceding
         // move to set this.mouse, so the raycast would otherwise use stale coords.
@@ -254,8 +257,8 @@ export class InputHandler {
             return;
         }
 
-        // Check for deck or choice card
-        if (this.game.turnStep === 'PICK' && !this.isSelectionMode) {
+        // Check for deck or choice card (picking is turn-gated)
+        if (this.game.isMyTurn() && this.game.turnStep === 'PICK' && !this.isSelectionMode) {
             const deckIntersects = this.raycaster.intersectObjects(this.renderer.deckGroup.children);
             if (deckIntersects.length > 0) {
                 const mesh = deckIntersects[0].object;
@@ -326,11 +329,13 @@ export class InputHandler {
                 : new THREE.Vector2(this.draggedCardMesh.position.x, this.draggedCardMesh.position.z);
             const choicePos2D = new THREE.Vector2(CHOICE_POS.x, CHOICE_POS.z);
 
-            // Only allow discard if it's the correct turn step
-            if (this.game.turnStep === 'DISCARD' && aim2D.distanceTo(choicePos2D) < DISCARD_ZONE_RADIUS) {
+            // Only allow discard if it's my turn AND the correct turn step;
+            // otherwise the drop falls through to a (harmless) reorder.
+            if (this.game.isMyTurn() && this.game.turnStep === 'DISCARD' && aim2D.distanceTo(choicePos2D) < DISCARD_ZONE_RADIUS) {
                 this.isWaitingForServer = true;
                 this.lockedDiscardMesh = this.draggedCardMesh;
-                this.callbacks.discardCard(oldIndex, this.draggedCardMesh.position.clone(), this.draggedCardMesh.quaternion.clone());
+                const cardId = this.draggedCardMesh.userData.card && this.draggedCardMesh.userData.card.id;
+                this.callbacks.discardCard(oldIndex, this.draggedCardMesh.position.clone(), this.draggedCardMesh.quaternion.clone(), cardId);
                 
                 this.isDragging = false;
                 this.draggedCardMesh = null;

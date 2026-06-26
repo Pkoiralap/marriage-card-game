@@ -321,15 +321,26 @@ class HumanPlayer(BasePlayer):
             return True, card, source
         return False, None, None
 
-    def handle_discard(self, card_index=None, **kwargs):
-        if card_index is None:
+    def handle_discard(self, card_index=None, card_id=None, **kwargs):
+        hand = self.player_model.hand
+        if not hand:
             return False, None
 
-        if 0 <= card_index < len(self.player_model.hand):
-            card = self.player_model.hand.pop(card_index)
-            self.game_model.visibles.append(card)
-            return True, card
-        return False, None
+        # Prefer the card's stable id: the client's visual hand order can drift
+        # from the server's stored order after reorders, so a positional index
+        # may point at the wrong card. The id is unambiguous. Fall back to the
+        # index for callers (AI / auto-act) that only supply a position.
+        idx = None
+        if card_id is not None:
+            idx = next((i for i, c in enumerate(hand) if c.get('id') == card_id), None)
+        if idx is None and card_index is not None and 0 <= card_index < len(hand):
+            idx = card_index
+        if idx is None:
+            return False, None
+
+        card = hand.pop(idx)
+        self.game_model.visibles.append(card)
+        return True, card
 
 class AIPlayer(BasePlayer):
     # F3: difficulty knob. 'easy' keeps the old random behaviour, 'normal'

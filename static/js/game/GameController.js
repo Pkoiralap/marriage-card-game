@@ -49,9 +49,10 @@ export class GameController {
                 if (!this.inputHandler) return;
                 const indices = this.inputHandler.getSelectedIndices();
                 if (this.showMode === 'CLAIM') {
-                    // bug3: validate one meld group toward a claim (dirty OK).
-                    if (indices.length < 2 || indices.length > 5) {
-                        this.notify("Select 2-5 cards for a set/sequence", 'warn');
+                    // bug3: validate one meld group toward a claim. Dirty melds
+                    // (same-rank sets, runs, tunnelas, wild-filled) are 3+ cards.
+                    if (indices.length < 3 || indices.length > 5) {
+                        this.notify("Select 3-5 cards for a set/sequence", 'warn');
                         return;
                     }
                     this.socket.registerClaim(indices);
@@ -165,11 +166,11 @@ export class GameController {
                 this.socket.pickCard(source, index);
                 return true;
             },
-            discardCard: (index, pos, quat) => {
+            discardCard: (index, pos, quat, cardId = null) => {
                 if (this.isAnimating) return false;
                 this.wasManualDiscard = true;
                 this.lastDiscardTransform = { pos, quat };
-                this.socket.discardCard(index);
+                this.socket.discardCard(index, cardId);
                 return true;
             },
             reorderHand: (oldIndex, newIndex) => {

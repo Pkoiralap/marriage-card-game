@@ -26,6 +26,9 @@ from .logic import auto_act_decision
 from .rules import Card, is_sequence, is_tunnela, is_dublee, is_valid_meld
 # S1: real claim validation + round scoring over the whole holding.
 from .rules import can_claim, round_scores  # bug3: claim accepts a 1-card discard
+# Claim-only: dirty melds (same-rank sets / wild placeholders) + the broader
+# claim joker set (every same-rank card is wild). NOT used for sequence reveal.
+from .rules import is_dirty_sequence, claim_joker_ids
 from . import emotes  # F1: gesture allowlist (is_valid_gesture) + F2: quick-chat phrases
 
 logger = logging.getLogger(__name__)
@@ -63,7 +66,7 @@ class GameConsumer(AsyncWebsocketConsumer):
     DISPATCH = {
         'get_game_state':    ('send_game_state',   ('player_name',)),
         'pick_card':         ('pick_card',         ('player_name', 'source', 'target_index')),
-        'discard_card':      ('discard_card',      ('player_name', 'card_index')),
+        'discard_card':      ('discard_card',      ('player_name', 'card_index', 'card_id')),
         'register_sequence': ('register_sequence', ('player_name', 'sequence_id', 'card_indices')),
         'register_tunnela':  ('register_tunnela',  ('player_name', 'card_indices')),
         'register_dublee':   ('register_dublee',   ('player_name', 'card_indices')),
@@ -327,8 +330,9 @@ class GameConsumer(AsyncWebsocketConsumer):
         })
         return True
 
-    async def _perform_discard(self, game, player, player_index, action_type, card_index=None):
-        success, discarded_card, _ = await sync_to_async(self.run_player_turn)(player, card_index=card_index)
+    async def _perform_discard(self, game, player, player_index, action_type, card_index=None, card_id=None):
+        success, discarded_card, _ = await sync_to_async(self.run_player_turn)(
+            player, card_index=card_index, card_id=card_id)
         if not success:
             return False
         player.turn_count += 1
@@ -353,11 +357,12 @@ class GameConsumer(AsyncWebsocketConsumer):
             await self._perform_pick(ctx.game, ctx.player, ctx.index, source, 'player_pick', target_index)
             await self._schedule_turn_timer()
 
-    async def discard_card(self, player_name, card_index):
+    async def discard_card(self, player_name, card_index, card_id=None):
         ctx = await self._load(player_name, with_players=True)
         if self._is_turn(ctx):
             self._cancel_turn_timer()  # S3: action taken in time
-            ok = await self._perform_discard(ctx.game, ctx.player, ctx.index, 'player_discard', card_index)
+            ok = await self._perform_discard(
+                ctx.game, ctx.player, ctx.index, 'player_discard', card_index, card_id)
             await self._schedule_turn_timer()  # S3: arm next seat's deadline
             if ok:
                 # Bug 2: a qualified player (3 sequences shown) who didn't get the
@@ -506,13 +511,15 @@ class GameConsumer(AsyncWebsocketConsumer):
             return await self.send_reject('CLAIM_FAILED', "It's not your turn.")
 
         player = ctx.player
-        jokers = jokers_from_maal(player.hand, ctx.game.maal_card)
+        # Claim-only rules: every same-rank card is wild (claim_joker_ids) and
+        # melds may be dirty (same-rank sets / wild-filled) via is_dirty_sequence.
+        jokers = claim_joker_ids(player.hand, ctx.game.maal_card)
         shown = [grp for grp in (player.shown_sequences or []) if grp]
         # Bug 3: a valid claim leaves exactly ONE card to discard; the rest must
         # meld (dirty/joker sequences allowed via `jokers`). The old check judged
         # the whole holding with no card set aside, so it never passed (22 cards
         # aren't divisible by the meld size) — hence "no win" for everyone.
-        if not can_claim(shown, player.hand, jokers):
+        if not can_claim(shown, player.hand, jokers, validator=is_dirty_sequence):
             return await self.send_reject(
                 'CLAIM_FAILED',
                 "Not a winning hand yet — every card but one must form a valid set.")
@@ -531,8 +538,10 @@ class GameConsumer(AsyncWebsocketConsumer):
         cards, card_objs = self._select_cards(ctx.player.hand, card_indices)
         if card_objs is None:
             return await self.send_reject('CLAIM_GROUP_FAILED', "Invalid card selection.")
-        jokers = jokers_from_maal(ctx.player.hand, ctx.game.maal_card)
-        if not is_valid_meld(card_objs, jokers):
+        # Claim groups accept dirty melds (same-rank sets, wild placeholders),
+        # judged with the broader claim joker set. Mirrors claim_game's win check.
+        jokers = claim_joker_ids(ctx.player.hand, ctx.game.maal_card)
+        if not is_dirty_sequence(card_objs, jokers):
             return await self.send_reject(
                 'CLAIM_GROUP_FAILED', "These cards don't form a valid set/sequence.")
         await self.send(text_data=json.dumps({'message': json.dumps({
@@ -844,15 +853,23 @@ class GameConsumer(AsyncWebsocketConsumer):
         await self._finish_round(game, players, player.name)
         return True
 
-    async def _ai_maybe_quip(self, player_name):
-        """Occasionally play a subtle gesture / quick-chat so AIs feel alive.
+    # Rotating emote pools so AI table-talk reads as lively/varied rather than
+    # repetitive. Cycled by a per-consumer tick (see _ai_maybe_quip).
+    _AI_GESTURES = ['nod', 'think', 'clap', 'shrug', 'point', 'wave', 'jump']
+    _AI_PHRASES = ['nice', 'gg', 'hurryup', 'hello', 'wellplayed', 'oops', 'soclose', 'yourturn']
 
-        Low-probability and cosmetic — only valid allowlisted ids are used."""
-        roll = random.random()
-        if roll < 0.12:
-            await self._ai_emote(player_name, gesture=random.choice(['think', 'nod', 'shrug', 'clap']))
-        if roll < 0.05:
-            await self._ai_emote(player_name, phrase_id=random.choice(['nice', 'gg', 'hurryup', 'hello']))
+    async def _ai_maybe_quip(self, player_name):
+        """After every AI turn: send a quick-chat line, and play a gesture on
+        alternate turns. Cosmetic and best-effort; only allowlisted ids are used.
+
+        (Previously low-probability; now every turn so the table always feels
+        alive and chat bubbles are easy to see.)"""
+        tick = getattr(self, '_emote_tick', 0)
+        self._emote_tick = tick + 1
+        phrase = self._AI_PHRASES[tick % len(self._AI_PHRASES)]
+        # Gestures on alternate turns so they don't fire on literally every move.
+        gesture = self._AI_GESTURES[(tick // 2) % len(self._AI_GESTURES)] if tick % 2 == 0 else None
+        await self._ai_emote(player_name, gesture=gesture, phrase_id=phrase)
 
     async def _ai_emote(self, player_name, gesture=None, phrase_id=None, pause=0.0):
         """Make an AI play a gesture and/or quick-chat line (cosmetic, best-effort).

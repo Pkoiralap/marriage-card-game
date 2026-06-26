@@ -48,8 +48,10 @@ export class SocketManager {
         this.send({ type: 'pick_card', player_name: this.playerName, source: source, target_index: targetIndex });
     }
 
-    discardCard(cardIndex) {
-        this.send({ type: 'discard_card', player_name: this.playerName, card_index: cardIndex });
+    discardCard(cardIndex, cardId = null) {
+        // card_id is the source of truth server-side (robust to hand-order
+        // drift from reorders); card_index is kept as a fallback.
+        this.send({ type: 'discard_card', player_name: this.playerName, card_index: cardIndex, card_id: cardId });
     }
 
     registerSequence(sequenceId, cardIndices) {
