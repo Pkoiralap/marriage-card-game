@@ -494,7 +494,15 @@ export class Renderer {
         for (let i = 0; i < numOpponents; i++) {
             const pos = this.getOpponentPosition(i, numOpponents);
             const faces = (i === peekSlot && peekCards && peekCards.length) ? peekCards : null;
-            this._buildHeldCardFan(pos, sharedGeo, backMat, faces);
+            // Real-life tilt: a player angles their fan toward their own right so
+            // the neighbour on their LEFT can't peek it. Apply it only to YOUR two
+            // adjacent neighbours — the right neighbour (slot 0) turns away from
+            // you (hidden even if you rotate right), and the left neighbour (last
+            // slot) turns slightly toward you (reads more fully when you peek
+            // left). The across player(s) keep facing centre.
+            const isNeighbour = (i === 0 || i === numOpponents - 1);
+            const tilt = isNeighbour ? -0.55 : 0;
+            this._buildHeldCardFan(pos, sharedGeo, backMat, faces, tilt);
         }
     }
 
@@ -508,7 +516,7 @@ export class Renderer {
     // neighbour uses the SAME held position/orientation — revealing only swaps
     // the BACKS for real FACES IN PLACE (so a glance left reads them) rather than
     // re-laying the cards out, which keeps the reveal seamless and realistic.
-    _buildHeldCardFan(pos, geo, backMat, faces = null) {
+    _buildHeldCardFan(pos, geo, backMat, faces = null, tilt = 0) {
         const count = faces ? faces.length : 21;
         if (count <= 0) return;
 
@@ -516,10 +524,13 @@ export class Renderer {
         // Anchor in front of the avatar (toward centre), raised to chest/face
         // height so it reads as cards held up in front of them.
         const anchor = new THREE.Vector3(pos.x * 0.72, 4.2, pos.z * 0.72);
-        // Always face the table centre (held toward themselves) — identical for
+        // Base facing is the table centre (held toward themselves) — identical for
         // backs and revealed faces so the reveal doesn't move/re-orient the fan.
         const viewPoint = new THREE.Vector3(0, this._camHeight, 0);
         const toCam = new THREE.Vector3(viewPoint.x - anchor.x, 0, viewPoint.z - anchor.z).normalize();
+        // ...then yaw it toward the player's own right (negative spin): turns the
+        // left neighbour's fan toward you and the right neighbour's away.
+        if (tilt) toCam.applyAxisAngle(up, tilt);
         const right = new THREE.Vector3().crossVectors(up, toCam).normalize();   // horizontal
         const basis = new THREE.Matrix4().makeBasis(right, up, toCam);
         const baseQuat = new THREE.Quaternion().setFromRotationMatrix(basis);
