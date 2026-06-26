@@ -501,7 +501,7 @@ export class Renderer {
             // slot) turns slightly toward you (reads more fully when you peek
             // left). The across player(s) keep facing centre.
             const isNeighbour = (i === 0 || i === numOpponents - 1);
-            const tilt = isNeighbour ? -0.55 : 0;
+            const tilt = isNeighbour ? 0.55 : 0;
             this._buildHeldCardFan(pos, sharedGeo, backMat, faces, tilt);
         }
     }
