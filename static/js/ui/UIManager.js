@@ -111,6 +111,13 @@ export class UIManager {
             if (this.callbacks.onTogglePeek) this.callbacks.onTogglePeek(next);
         });
 
+        // F2: quick-chat is hidden behind a 💬 toggle so the phrase buttons don't
+        // cover the table / emote button. Clicking it opens/closes the picker.
+        const chatBox = document.getElementById('chat-box');
+        document.getElementById('chat-toggle')?.addEventListener('click', () => {
+            if (chatBox) chatBox.classList.toggle('chat-open');
+        });
+
         // F1: emote menu. Toggle opens the grid; each gesture button fires the
         // onGesture callback (wired to SocketManager.sendGesture) and closes it.
         const emoteControls = document.getElementById('emote-controls');

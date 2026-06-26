@@ -494,14 +494,14 @@ export class Renderer {
         for (let i = 0; i < numOpponents; i++) {
             const pos = this.getOpponentPosition(i, numOpponents);
             const faces = (i === peekSlot && peekCards && peekCards.length) ? peekCards : null;
-            // Real-life tilt: a player angles their fan toward their own right so
-            // the neighbour on their LEFT can't peek it. Apply it only to YOUR two
-            // adjacent neighbours — the right neighbour (slot 0) turns away from
-            // you (hidden even if you rotate right), and the left neighbour (last
-            // slot) turns slightly toward you (reads more fully when you peek
-            // left). The across player(s) keep facing centre.
-            const isNeighbour = (i === 0 || i === numOpponents - 1);
-            const tilt = isNeighbour ? 0.55 : 0;
+            const isRightNeighbour = (i === 0);
+            const isLeftNeighbour = (i === numOpponents - 1);
+            let tilt = 0;
+            if (isRightNeighbour) {
+                tilt = 0.55;
+            } else if (isLeftNeighbour) {
+                tilt = 0.15;
+            }
             this._buildHeldCardFan(pos, sharedGeo, backMat, faces, tilt);
         }
     }

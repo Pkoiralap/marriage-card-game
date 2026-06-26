@@ -114,10 +114,12 @@
         </div>
 
         <!-- F2: quick-chat. #chat-panel = received-message log, #chat-quick =
-             phrase picker (buttons injected by GameController.setupQuickChat). -->
+             phrase picker (buttons injected by GameController.setupQuickChat),
+             hidden until the 💬 toggle opens it so it doesn't cover the table. -->
         <div id="chat-box">
             <div id="chat-panel"></div>
             <div id="chat-quick"></div>
+            <button id="chat-toggle" class="btn btn-secondary btn-sm" title="Quick chat">💬</button>
         </div>
     </div>
 

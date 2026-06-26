@@ -581,6 +581,8 @@ export class GameController {
             btn.textContent = p.text;
             btn.addEventListener('click', () => {
                 if (this.socket) this.socket.sendChat(p.id);
+                // Close the picker after sending (mirrors the emote menu).
+                document.getElementById('chat-box')?.classList.remove('chat-open');
             });
             picker.appendChild(btn);
         });
