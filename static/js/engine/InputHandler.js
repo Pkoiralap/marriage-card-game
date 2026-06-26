@@ -162,11 +162,26 @@ export class InputHandler {
     }
 
     // Peek: the left neighbour's hand is only requested from the server once the
-    // view is rotated far enough toward them (and only then does the server send
-    // it, and only if they consented). Fires the requestPeek callback on change.
+    // view is rotated far enough TOWARD THEM — never when turning the other way
+    // (toward the right opponent). The trigger direction is derived from the left
+    // neighbour's actual seat azimuth, so it's correct for any player count.
+    // (And the server still only sends the hand if they consented.)
     _updatePeekView() {
         const PEEK_THRESHOLD = 0.22;   // radians of glance before we ask to peek
-        const want = Math.abs(this.renderer.cameraAzimuthOffset()) > PEEK_THRESHOLD;
+        const numOpp = this.game.players ? this.game.players.length - 1 : 0;
+        let want = false;
+        if (numOpp >= 1) {
+            // Left neighbour is the last (screen-left) opponent slot.
+            const pos = this.renderer.getOpponentPosition(numOpp - 1, numOpp);
+            // Signed azimuth step from the default view toward that seat: its sign
+            // is the orbit direction that turns to look at them.
+            let toLeft = Math.atan2(pos.z, pos.x) - this.renderer._camAzimuthBase;
+            while (toLeft > Math.PI) toLeft -= 2 * Math.PI;
+            while (toLeft < -Math.PI) toLeft += 2 * Math.PI;
+            const sign = toLeft >= 0 ? 1 : -1;
+            // Only when rotated past the threshold IN THAT direction.
+            want = this.renderer.cameraAzimuthOffset() * sign > PEEK_THRESHOLD;
+        }
         if (want === this._peekActive) return;
         this._peekActive = want;
         if (this.callbacks.requestPeek) this.callbacks.requestPeek(want);
