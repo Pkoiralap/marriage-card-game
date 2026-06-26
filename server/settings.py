@@ -193,6 +193,15 @@ WHITENOISE_AUTOREFRESH = DEBUG
 if DEBUG:
     WHITENOISE_MAX_AGE = 0
 
+    def _no_cache_static(headers, path, url):
+        # Force browsers to revalidate static assets in dev so updated ES
+        # modules / CSS are never served stale (max-age=0 alone wasn't enough).
+        headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        headers["Pragma"] = "no-cache"
+        headers["Expires"] = "0"
+
+    WHITENOISE_ADD_HEADERS_FUNCTION = _no_cache_static
+
 STORAGES = {
     "default": {
         "BACKEND": "django.core.files.storage.FileSystemStorage",
