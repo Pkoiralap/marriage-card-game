@@ -504,9 +504,10 @@ export class Renderer {
     //
     // Orientation models real life: every player holds their cards facing
     // INWARD (toward the table centre / their own eyes), so from your seat the
-    // neighbours' fans read edge-on and you can't see into them — EXCEPT the
-    // left neighbour you're peeking, whose revealed faces are turned to face
-    // your current (rotated) viewpoint so a glance left reads them.
+    // neighbours' fans read edge-on and you can't see into them. The peeked left
+    // neighbour uses the SAME held position/orientation — revealing only swaps
+    // the BACKS for real FACES IN PLACE (so a glance left reads them) rather than
+    // re-laying the cards out, which keeps the reveal seamless and realistic.
     _buildHeldCardFan(pos, geo, backMat, faces = null) {
         const count = faces ? faces.length : 21;
         if (count <= 0) return;
@@ -515,11 +516,9 @@ export class Renderer {
         // Anchor in front of the avatar (toward centre), raised to chest/face
         // height so it reads as cards held up in front of them.
         const anchor = new THREE.Vector3(pos.x * 0.72, 4.2, pos.z * 0.72);
-        // Peeked left neighbour: face the LIVE (rotated) camera so the revealed
-        // faces are readable once you've turned to look. Everyone else faces the
-        // table centre (held toward themselves) — so they read edge-on from your
-        // seat and the right neighbour's hand can't be seen.
-        const viewPoint = faces ? this.camera.position : new THREE.Vector3(0, this._camHeight, 0);
+        // Always face the table centre (held toward themselves) — identical for
+        // backs and revealed faces so the reveal doesn't move/re-orient the fan.
+        const viewPoint = new THREE.Vector3(0, this._camHeight, 0);
         const toCam = new THREE.Vector3(viewPoint.x - anchor.x, 0, viewPoint.z - anchor.z).normalize();
         const right = new THREE.Vector3().crossVectors(up, toCam).normalize();   // horizontal
         const basis = new THREE.Matrix4().makeBasis(right, up, toCam);
