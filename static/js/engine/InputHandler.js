@@ -281,7 +281,11 @@ export class InputHandler {
     createGhostCard(sourceMesh) {
         this.ghostCard = sourceMesh.clone();
         this.ghostCard.material = Array.isArray(sourceMesh.material) ? sourceMesh.material.map(m => m.clone()) : sourceMesh.material.clone();
-        
+        // bug1 follow-up: hand cards render at 0.7 scale (see Card.js), but the
+        // deck/choice source meshes are full size. Match the destination size so
+        // the dragged card doesn't fly oversized and then pop down on landing.
+        this.ghostCard.scale.setScalar(0.7);
+
         this.ghostCard.renderOrder = 1000;
         if (Array.isArray(this.ghostCard.material)) {
             this.ghostCard.material.forEach(m => {
