@@ -103,6 +103,12 @@ export class SocketManager {
         this.send({ type: 'set_peek', player_name: this.playerName, allow: !!allow });
     }
 
+    // Peek: ask to start/stop receiving my left neighbour's hand (the server
+    // only sends it while I'm asking AND they've consented).
+    requestPeek(want) {
+        this.send({ type: 'request_peek', player_name: this.playerName, want: !!want });
+    }
+
     // F2: send a quick-chat phrase (validated server-side against CHAT_PHRASES).
     sendChat(phraseId) {
         this.send({ type: 'chat', player_name: this.playerName, phrase_id: phraseId });

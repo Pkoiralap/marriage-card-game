@@ -314,6 +314,24 @@ select.form-control {
     grid-column: 2 / 4;
 }
 
+/* Peek consent checkbox for AI seats (sits in the name column when AI). */
+.seat-row .seat-peek {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 0.8rem;
+    color: var(--text-muted, #aaa);
+    white-space: nowrap;
+    cursor: pointer;
+}
+.seat-row .seat-peek-box { cursor: pointer; }
+
+/* Peek toggle button highlights when the player is showing their hand. */
+#peek-toggle-btn.peek-on {
+    background: var(--accent, #4caf50);
+    color: #fff;
+}
+
 .hint {
     display: block;
     margin-top: 0.45rem;

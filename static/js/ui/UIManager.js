@@ -216,14 +216,29 @@ export class UIManager {
             nameInput.placeholder = `Player ${i + 1}`;
             nameInput.value = (remembered && remembered.name) ? remembered.name : '';
 
-            const syncNameVisibility = () => {
-                nameInput.style.display = select.value === 'HUMAN' ? 'block' : 'none';
+            // Peek consent for AI seats (humans toggle it in-game). When checked,
+            // this AI lets its right neighbour rotate the table to see its hand.
+            const peekLabel = document.createElement('label');
+            peekLabel.className = 'seat-peek';
+            peekLabel.title = "Let this AI's right neighbour peek at its hand";
+            const peekBox = document.createElement('input');
+            peekBox.type = 'checkbox';
+            peekBox.className = 'seat-peek-box';
+            peekBox.checked = !!(remembered && remembered.allow_peek);
+            peekLabel.appendChild(peekBox);
+            peekLabel.appendChild(document.createTextNode(' 👁 show hand'));
+
+            const syncTypeVisibility = () => {
+                const isHuman = select.value === 'HUMAN';
+                nameInput.style.display = isHuman ? 'block' : 'none';
+                peekLabel.style.display = isHuman ? 'none' : 'inline-flex';
             };
-            select.addEventListener('change', syncNameVisibility);
-            syncNameVisibility();
+            select.addEventListener('change', syncTypeVisibility);
+            syncTypeVisibility();
 
             row.appendChild(select);
             row.appendChild(nameInput);
+            row.appendChild(peekLabel);
             container.appendChild(row);
         }
     }
@@ -250,7 +265,8 @@ export class UIManager {
             if (i === 0) return { type: 'HUMAN', name: creatorName };
             const type = row.querySelector('.seat-type')?.value || 'AI';
             const name = row.querySelector('.seat-name')?.value.trim() || '';
-            return { type, name: type === 'HUMAN' ? name : '' };
+            const allow_peek = !!row.querySelector('.seat-peek-box')?.checked;
+            return { type, name: type === 'HUMAN' ? name : '', allow_peek };
         });
     }
 

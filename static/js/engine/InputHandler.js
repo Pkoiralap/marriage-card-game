@@ -1,4 +1,4 @@
-import { FAN_RADIUS, FAN_SPACING, HAND_CENTER_POS, CHOICE_POS, DISCARD_ZONE_RADIUS } from '../utils/Constants.js';
+import { FAN_RADIUS, FAN_SPACING, CHOICE_POS, DISCARD_ZONE_RADIUS } from '../utils/Constants.js';
 
 export class InputHandler {
     constructor(renderer, game, callbacks) {
@@ -24,6 +24,7 @@ export class InputHandler {
         this.cameraDragging = false;
         this._dragStartX = 0;
         this._camStartAzimuth = 0;
+        this._peekActive = false;   // currently rotated far enough to request a peek
 
         // Ghost card for dragging from source
         this.ghostCard = null;
@@ -160,6 +161,17 @@ export class InputHandler {
         this.clearArmed();
     }
 
+    // Peek: the left neighbour's hand is only requested from the server once the
+    // view is rotated far enough toward them (and only then does the server send
+    // it, and only if they consented). Fires the requestPeek callback on change.
+    _updatePeekView() {
+        const PEEK_THRESHOLD = 0.22;   // radians of glance before we ask to peek
+        const want = Math.abs(this.renderer.cameraAzimuthOffset()) > PEEK_THRESHOLD;
+        if (want === this._peekActive) return;
+        this._peekActive = want;
+        if (this.callbacks.requestPeek) this.callbacks.requestPeek(want);
+    }
+
     // Coordinates from either a mouse event or the first touch point.
     getEventPoint(event) {
         const t = (event.touches && event.touches[0]) || (event.changedTouches && event.changedTouches[0]);
@@ -175,6 +187,7 @@ export class InputHandler {
         if (this.cameraDragging) {
             const dx = p.x - this._dragStartX;
             this.renderer.setCameraAzimuth(this._camStartAzimuth + dx * 0.004);
+            this._updatePeekView();
             return;
         }
 
@@ -421,18 +434,19 @@ export class InputHandler {
 
     calculateHoverIndex(position) {
         const radius = FAN_RADIUS;
+        const handCenter = this.renderer.getHandCenter();   // orbits with camera
         const viewDir = new THREE.Vector3();
         this.renderer.camera.getWorldDirection(viewDir).normalize();
         const up = new THREE.Vector3(0, 1, 0);
         const right = new THREE.Vector3().crossVectors(viewDir, up).normalize();
         const screenUp = new THREE.Vector3().crossVectors(right, viewDir).normalize();
-        const pivotPos = HAND_CENTER_POS.clone().add(screenUp.clone().multiplyScalar(-radius));
+        const pivotPos = handCenter.clone().add(screenUp.clone().multiplyScalar(-radius));
 
         const toCard = position.clone().sub(pivotPos);
         const x = toCard.dot(right);
         const y = toCard.dot(screenUp);
-        
-        const heightFromBase = position.dot(screenUp) - HAND_CENTER_POS.dot(screenUp);
+
+        const heightFromBase = position.dot(screenUp) - handCenter.dot(screenUp);
         if (heightFromBase > 10) { 
             if (!this.isWaitingForServer) this.hoverIndex = -1;
             return;
@@ -453,17 +467,18 @@ export class InputHandler {
 
     getCardTransform(index, totalCards) {
         const radius = FAN_RADIUS;
-        const angleStep = FAN_SPACING / radius; 
+        const angleStep = FAN_SPACING / radius;
         const totalAngle = (totalCards - 1) * angleStep;
         const startAngle = totalAngle / 2;
 
+        const handCenter = this.renderer.getHandCenter();   // orbits with camera
         const viewDir = new THREE.Vector3();
         this.renderer.camera.getWorldDirection(viewDir).normalize();
         const up = new THREE.Vector3(0, 1, 0);
         const right = new THREE.Vector3().crossVectors(viewDir, up).normalize();
         const screenUp = new THREE.Vector3().crossVectors(right, viewDir).normalize();
 
-        const pivotPos = HAND_CENTER_POS.clone().add(screenUp.clone().multiplyScalar(-radius));
+        const pivotPos = handCenter.clone().add(screenUp.clone().multiplyScalar(-radius));
         const theta = (index * angleStep) - startAngle;
 
         const offsetRight = right.clone().multiplyScalar(radius * Math.sin(theta));

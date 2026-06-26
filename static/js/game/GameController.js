@@ -4,7 +4,7 @@ import { InputHandler } from '../engine/InputHandler.js';
 import { SocketManager } from '../network/SocketManager.js';
 import { UIManager } from '../ui/UIManager.js';
 
-import { DECK_POS, CHOICE_POS, HAND_CENTER_POS } from '../utils/Constants.js';
+import { DECK_POS, CHOICE_POS } from '../utils/Constants.js';
 
 // F2: client mirror of game/emotes.py CHAT_PHRASES (id + display text). The
 // server is the source of truth and re-validates ids; this only drives the
@@ -180,6 +180,12 @@ export class GameController {
             },
             reorderHand: (oldIndex, newIndex) => {
                 this.socket.reorderHand(oldIndex, newIndex);
+            },
+            // Peek: ask the server for (or stop receiving) the left neighbour's
+            // hand. The server only honours it if they've consented; the next
+            // state push carries their real cards (or clears them).
+            requestPeek: (want) => {
+                if (this.socket) this.socket.requestPeek(want);
             }
         });
         
@@ -342,7 +348,7 @@ export class GameController {
         while (relativeIndex < 0) relativeIndex += this.game.players.length;
         relativeIndex = relativeIndex % (this.game.players.length); 
 
-        const oppPos = isMe ? HAND_CENTER_POS.clone() : this.renderer.getOpponentPosition(relativeIndex, this.game.players.length - 1);
+        const oppPos = isMe ? this.renderer.getHandCenter() : this.renderer.getOpponentPosition(relativeIndex, this.game.players.length - 1);
         if (!isMe) oppPos.y = 2.5; 
 
         if (action.type.includes('pick')) {

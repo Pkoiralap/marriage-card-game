@@ -1,4 +1,4 @@
-import { TABLE_RADIUS, OPPONENT_TABLE_RADIUS, CARD_WIDTH, CARD_HEIGHT, CARD_THICKNESS, DECK_POS, CHOICE_POS, DISCARD_ZONE_RADIUS } from '../utils/Constants.js';
+import { TABLE_RADIUS, OPPONENT_TABLE_RADIUS, CARD_WIDTH, CARD_HEIGHT, CARD_THICKNESS, DECK_POS, CHOICE_POS, DISCARD_ZONE_RADIUS, HAND_CENTER_POS } from '../utils/Constants.js';
 import { createCardBackTexture, createCardTexture } from '../utils/Helpers.js';
 import { Avatar } from './Avatar.js';
 
@@ -73,6 +73,23 @@ export class Renderer {
 
     orbitCamera(deltaPhi) { this.setCameraAzimuth(this._camAzimuth + deltaPhi); }
     resetCameraView() { this.setCameraAzimuth(this._camAzimuthBase); }
+
+    // How far (radians) the view is currently rotated from its default. The
+    // InputHandler uses this to decide when a peek is "active" (rotated enough).
+    cameraAzimuthOffset() { return this._camAzimuth - this._camAzimuthBase; }
+
+    // The player's own hand orbits WITH the camera so it stays centred on screen
+    // as the view rotates — rotate the base hand centre around the table centre
+    // (origin) by the same azimuth delta as the camera.
+    getHandCenter() {
+        const d = this._camAzimuth - this._camAzimuthBase;
+        const c = Math.cos(d), s = Math.sin(d);
+        return new THREE.Vector3(
+            HAND_CENTER_POS.x * c - HAND_CENTER_POS.z * s,
+            HAND_CENTER_POS.y,
+            HAND_CENTER_POS.x * s + HAND_CENTER_POS.z * c,
+        );
+    }
 
     initRenderer() {
         this.threeRenderer = new THREE.WebGLRenderer({ antialias: true });
@@ -483,8 +500,13 @@ export class Renderer {
 
     // A static fan of cards held UPRIGHT in front of an avatar, like a real
     // hand: backs (or real faces when `faces` is given) pivoting about a grip
-    // point near the bottom, heavily overlapping, turned by yaw to face the
-    // BASE viewpoint so the fan stays vertical and a small orbit doesn't flip it.
+    // point near the bottom, heavily overlapping.
+    //
+    // Orientation models real life: every player holds their cards facing
+    // INWARD (toward the table centre / their own eyes), so from your seat the
+    // neighbours' fans read edge-on and you can't see into them — EXCEPT the
+    // left neighbour you're peeking, whose revealed faces are turned to face
+    // your current (rotated) viewpoint so a glance left reads them.
     _buildHeldCardFan(pos, geo, backMat, faces = null) {
         const count = faces ? faces.length : 21;
         if (count <= 0) return;
@@ -493,8 +515,12 @@ export class Renderer {
         // Anchor in front of the avatar (toward centre), raised to chest/face
         // height so it reads as cards held up in front of them.
         const anchor = new THREE.Vector3(pos.x * 0.72, 4.2, pos.z * 0.72);
-        // Yaw toward the base viewpoint (kept stable across orbit).
-        const toCam = new THREE.Vector3(this._baseCamPos.x - anchor.x, 0, this._baseCamPos.z - anchor.z).normalize();
+        // Peeked left neighbour: face the LIVE (rotated) camera so the revealed
+        // faces are readable once you've turned to look. Everyone else faces the
+        // table centre (held toward themselves) — so they read edge-on from your
+        // seat and the right neighbour's hand can't be seen.
+        const viewPoint = faces ? this.camera.position : new THREE.Vector3(0, this._camHeight, 0);
+        const toCam = new THREE.Vector3(viewPoint.x - anchor.x, 0, viewPoint.z - anchor.z).normalize();
         const right = new THREE.Vector3().crossVectors(up, toCam).normalize();   // horizontal
         const basis = new THREE.Matrix4().makeBasis(right, up, toCam);
         const baseQuat = new THREE.Quaternion().setFromRotationMatrix(basis);

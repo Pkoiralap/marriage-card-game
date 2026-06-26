@@ -79,6 +79,7 @@ class GameConsumer(AsyncWebsocketConsumer):
         'gesture':           ('gesture',           ('player_name', 'gesture')),  # F1
         'chat':              ('chat',              ('player_name', 'phrase_id')),  # F2
         'set_peek':          ('set_peek',          ('player_name', 'allow')),  # peek consent
+        'request_peek':      ('request_peek',      ('player_name', 'want')),   # peek (rotated)
         'play_again':        ('play_again',        ('player_name',)),  # S1
     }
 
@@ -403,6 +404,14 @@ class GameConsumer(AsyncWebsocketConsumer):
         ctx.player.allow_peek = bool(allow)
         await sync_to_async(ctx.player.save)(update_fields=['allow_peek'])
         await self.broadcast_refresh()
+
+    async def request_peek(self, player_name, want):
+        """The viewer rotated the table toward (or away from) their left
+        neighbour. The neighbour's hand is only ever sent while this is on AND
+        the neighbour consented (see send_game_state). Per-connection + transient
+        so it never persists. Re-send state so the cards appear/clear at once."""
+        self._peek_requesting = bool(want)
+        await self.send_game_state(player_name)
 
     async def register_sequence(self, player_name, sequence_id, card_indices):
         ctx = await self._load(player_name)
@@ -983,14 +992,15 @@ class GameConsumer(AsyncWebsocketConsumer):
         } for p in players_models]
 
         # Peek: a player may rotate the table to glance at their LEFT neighbour's
-        # hand, but only if that neighbour consented (allow_peek). Seats are
-        # ordered by created_at; the left neighbour is seat (me+1) % N — which the
-        # client renders at its last (screen-left) opponent slot. Only THIS
-        # client receives those real cards, so the consent stays one-directional.
+        # hand, but ONLY when BOTH (a) they're actively rotated toward them
+        # (self._peek_requesting, set by request_peek) AND (b) that neighbour
+        # consented (allow_peek). Seats are ordered by created_at; the left
+        # neighbour is seat (me+1) % N — the client's last (screen-left) opponent
+        # slot. Only THIS client ever receives those real cards.
         N = len(players_models)
         seat_index = next((i for i, p in enumerate(players_models) if p.id == player.id), 0)
         peek_hand = None
-        if N > 1:
+        if N > 1 and getattr(self, '_peek_requesting', False):
             left_neighbour = players_models[(seat_index + 1) % N]
             if left_neighbour.allow_peek:
                 peek_hand = left_neighbour.hand

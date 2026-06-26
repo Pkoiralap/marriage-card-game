@@ -92,6 +92,7 @@ class DispatchTests(unittest.TestCase):
             'play_again',  # S1
             'register_claim',  # bug3
             'set_peek',  # peek consent
+            'request_peek',  # peek (rotated toward left neighbour)
         }
         self.assertEqual(set(GameConsumer.DISPATCH), expected)
 
@@ -257,6 +258,22 @@ class CreateGameViewTests(TestCase):
         self.assertEqual(game.num_players, 4)
         self.assertTrue(Player.objects.get(name="Pravesh", game=game).is_dealer)
         self.assertEqual(len(Player.objects.get(name="Bob", game=game).hand), 21)
+
+    def test_ai_peek_consent_from_seat_config(self):
+        # An AI seat flagged allow_peek consents at creation; others default off.
+        data = self._create({
+            "player_name": "Me",
+            "seats": [
+                {"type": "HUMAN"},
+                {"type": "AI", "allow_peek": True},
+                {"type": "AI"},
+            ],
+        })
+        game = Game.objects.get(id=data["game_id"])
+        self.assertTrue(Player.objects.get(name="AI_1", game=game).allow_peek)
+        self.assertFalse(Player.objects.get(name="AI_2", game=game).allow_peek)
+        # The human creator never consents at creation (toggled in-game).
+        self.assertFalse(Player.objects.get(name="Me", game=game).allow_peek)
 
     def test_requires_name(self):
         resp = self.client.post(

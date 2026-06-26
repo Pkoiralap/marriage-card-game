@@ -22,9 +22,11 @@ def create_game(request):
     game = Game.objects.create(
         num_players=len(seats), turn_player_index=0, code=Game.generate_code())
     creator = None
-    for i, (ptype, name) in enumerate(seats):
+    for i, (ptype, name, allow_peek) in enumerate(seats):
         player = Player.objects.create(
             name=name, game=game, player_type=ptype,
+            # AI seats can be set at creation to let their right neighbour peek.
+            allow_peek=allow_peek,
             # The creator has already claimed seat 0 (owned, not a free seat).
             is_dealer=(i == 0), is_joined=(i == 0), has_owner=(i == 0))
         if i == 0:
@@ -57,12 +59,14 @@ def list_games(request):
 
 
 def _normalize_seats(data, player_name):
-    """Build an ordered list of (player_type, name) tuples for the seats.
+    """Build an ordered list of (player_type, name, allow_peek) tuples for seats.
 
     Seat 0 is always the creator (human). Other seats come from the client's
     `seats` config when present; otherwise we fall back to the legacy layout of
     one human plus alternating AI. AI seats are auto-named and every name is
-    made unique so per-game name lookups stay unambiguous.
+    made unique so per-game name lookups stay unambiguous. ``allow_peek`` lets an
+    AI seat consent (at creation) to its right neighbour peeking at its hand;
+    humans toggle their own consent in-game so it's always False here for them.
     """
     raw_seats = data.get('seats')
     if not raw_seats:
@@ -73,11 +77,13 @@ def _normalize_seats(data, player_name):
 
     seats, used, ai_count = [], set(), 0
     for i, seat in enumerate(raw_seats):
+        allow_peek = False
         if i == 0:
             ptype, name = 'HUMAN', player_name
         elif str(seat.get('type', '')).upper() == 'AI':
             ai_count += 1
             ptype, name = 'AI', f'AI_{ai_count}'
+            allow_peek = bool(seat.get('allow_peek'))
         else:
             ptype = 'HUMAN'
             name = (seat.get('name') or '').strip() or f'Player {i + 1}'
@@ -87,6 +93,6 @@ def _normalize_seats(data, player_name):
             unique = f'{name} ({suffix})'
             suffix += 1
         used.add(unique)
-        seats.append((ptype, unique))
+        seats.append((ptype, unique, allow_peek))
 
     return seats
