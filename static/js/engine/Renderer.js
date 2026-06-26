@@ -36,10 +36,11 @@ export class Renderer {
         const aspect = window.innerWidth / window.innerHeight;
         const d = 17;
         this.camera = new THREE.OrthographicCamera(-d * aspect, d * aspect, d, -d, 1, 1000);
-        // Bug 1: low, near-eye-level angle (~18deg) so the player looks ACROSS the
-        // table at the opponents standing up, rather than down onto the felt.
-        this.camera.position.set(8, 12, 38);
-        this.camera.lookAt(0, 6, -2);
+        // Bug 1: keep the centered diagonal (equal X and Z, like the original) so
+        // the view stays centred, but LOWER the elevation to ~19deg so the player
+        // looks across the table at the opponents at eye level instead of top-down.
+        this.camera.position.set(26, 13, 26);
+        this.camera.lookAt(0, 5, 0);
     }
 
     initRenderer() {
