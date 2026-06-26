@@ -971,10 +971,31 @@ class TurnTimerSchedulingTests(TransactionTestCase):
         # S3 perf: scheduling no longer pushes its own refresh (the deadline
         # rides on the move's existing broadcast + the get_game_state response),
         # so a pick/discard isn't doubled into two full client refreshes.
-        game, human = self._human_turn_game()
+        game, human = self._human_turn_game()  # human defaults to not-joined (AFK)
         c = self._consumer(game.code)
         asyncio.run(c._schedule_turn_timer(broadcast=True))
         self.assertEqual(c._refreshes, 0)
+
+    def test_connected_human_is_never_auto_acted(self):
+        # The core fix: a CONNECTED (is_joined=True) human's turn must NOT arm a
+        # timer or set a deadline — the server never moves for a present player.
+        game, human = self._human_turn_game()
+        human.is_joined = True
+        human.save(update_fields=['is_joined'])
+        c = self._consumer(game.code)
+        asyncio.run(c._schedule_turn_timer())
+        game.refresh_from_db()
+        self.assertIsNone(game.turn_deadline)                          # no countdown
+        self.assertIsNone(GameConsumer.turn_timers.get(game.code))     # no timer armed
+
+    def test_disconnected_human_is_armed(self):
+        # A DISCONNECTED (AFK) human DOES get a timer so they can't stall the table.
+        game, human = self._human_turn_game()  # not-joined by default
+        c = self._consumer(game.code)
+        asyncio.run(c._schedule_turn_timer())
+        game.refresh_from_db()
+        self.assertIsNotNone(game.turn_deadline)
+        self.assertIsNotNone(GameConsumer.turn_timers.get(game.code))
         game.refresh_from_db()
         self.assertIsNotNone(game.turn_deadline)            # deadline still set
         self.assertIsNotNone(GameConsumer.turn_timers.get(game.code))  # timer armed

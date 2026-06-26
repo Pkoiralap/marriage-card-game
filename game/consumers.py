@@ -109,11 +109,11 @@ class GameConsumer(AsyncWebsocketConsumer):
             await self._set_joined(self.player_name, False)
         await self.channel_layer.group_discard(self.room_group_name, self.channel_name)
         # S3: a disconnecting human is exactly the AFK case the timer guards
-        # against. Leave the timer running so it auto-acts on their behalf and
-        # keeps play moving; the timer task is room-scoped (not tied to this
-        # socket) so it survives this disconnect. Re-arm the AI driver too in
-        # case the auto-act hands the turn to an AI seat.
+        # against. Now that they're marked not-joined, (re)arm the timer — if it's
+        # their turn it will auto-act so the table doesn't stall. Re-arm the AI
+        # driver too in case the auto-act hands the turn to an AI seat.
         self._ensure_ai_running()
+        await self._schedule_turn_timer()
 
     async def _set_joined(self, player_name, joined):
         try:
@@ -141,14 +141,10 @@ class GameConsumer(AsyncWebsocketConsumer):
             entry = self.DISPATCH.get(message.get('type'))
             if message.get('type') == 'get_game_state':
                 self._ensure_ai_running()
-                # S3 perf: only arm from the state path when NO timer is live
-                # (fresh connect / reconnect). The action handlers + AI handback
-                # arm it on turn changes; re-arming on every state fetch churned
-                # the DB/task and pushed the deadline forward each refresh, which
-                # added a visible lag to every pick/discard.
-                t = GameConsumer.turn_timers.get(self.room_name)
-                if t is None or t.done():
-                    await self._schedule_turn_timer()
+                # The AFK timer is armed at turn transitions (pick/discard, AI
+                # handback) and on disconnect — NOT per state fetch. Arming on
+                # every get_game_state churned the DB/task (lag) and reset the
+                # deadline forward each refresh.
             if entry:
                 method_name, fields = entry
                 await getattr(self, method_name)(*(message.get(f) for f in fields))
@@ -218,6 +214,14 @@ class GameConsumer(AsyncWebsocketConsumer):
             # AI turns are driven by handle_ai_turns; no human deadline.
             await self._clear_deadline(game)
             return
+        # S3 fix: NEVER auto-act a CONNECTED human. A present player who is
+        # thinking must keep their turn — the server must not move/draw/discard
+        # for them. Only a DISCONNECTED (AFK) human is auto-acted so they don't
+        # stall the table. (Previously connected players were auto-acted, which
+        # made "the game play itself" while you were deciding.)
+        if ctx.player.is_joined:
+            await self._clear_deadline(game)
+            return
 
         deadline = timezone.now() + timedelta(seconds=self.TURN_TIMEOUT_SECONDS)
         game.turn_deadline = deadline
@@ -237,36 +241,35 @@ class GameConsumer(AsyncWebsocketConsumer):
             await sync_to_async(game.save)(update_fields=['turn_deadline'])
 
     async def _run_turn_timer(self, player_id, turn_index, turn_step):
-        """Wait out the deadline, then auto-act for the AFK human (no busy-wait)."""
+        """Wait out the deadline, then auto-act for a DISCONNECTED human."""
         try:
             await asyncio.sleep(self.TURN_TIMEOUT_SECONDS)
-            # Re-load fresh state: only act if the SAME player is still on the
-            # SAME turn/step — i.e. they never acted. This is the never-double-act
-            # guard (a human action cancels this task before we get here anyway).
+        except asyncio.CancelledError:
+            # A real action / turn change cancelled us. Do NOT re-arm here — the
+            # canceller (action handler / disconnect) schedules the next timer.
+            # The old code re-armed in a `finally` on EVERY exit, including
+            # cancellation, which spawned overlapping timers that each auto-acted
+            # — the game "playing itself", multiple throws, and hands dropping
+            # below 21 cards. Returning on cancel keeps exactly one timer.
+            return
+
+        # The window elapsed. Auto-act once, only if the SAME, still-DISCONNECTED
+        # human is on the SAME turn/step, then re-arm for whatever's next.
+        try:
             game = await sync_to_async(Game.objects.get)(code=self.room_name)
             if not game.is_active:
                 return
             ctx = await self._load_turn_player()
-            # Never-double-act guard: the same player must still be on the SAME
-            # turn AND the SAME step the timer was armed for. turn_step matters
-            # because a human PICK advances PICK->DISCARD without changing the
-            # seat index — if we only checked the index, a timer armed on PICK
-            # could fire and auto-DISCARD right after the human picked, stealing
-            # their discard. (S3 QA bugfix.)
             if (ctx.player.id != player_id
                     or game.turn_player_index != turn_index
                     or game.turn_step != turn_step
-                    or ctx.player.player_type != 'HUMAN'):
-                return  # turn/step moved on; the human acted -> nothing to do
+                    or ctx.player.player_type != 'HUMAN'
+                    or ctx.player.is_joined):        # reconnected -> they play it
+                return
             await self._auto_act(game, ctx.player, ctx.index, turn_step)
-        except asyncio.CancelledError:
-            # Normal: a real action (or turn change) cancelled us.
-            raise
         except Exception:
             logger.exception("Turn timer auto-act failed in room %s", self.room_name)
         finally:
-            # Whatever happened, re-arm so the (possibly new) current seat gets a
-            # timer and AI seats keep flowing.
             if GameConsumer.turn_timers.get(self.room_name) is asyncio.current_task():
                 GameConsumer.turn_timers.pop(self.room_name, None)
             self._ensure_ai_running()
