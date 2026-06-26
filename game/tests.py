@@ -91,6 +91,7 @@ class DispatchTests(unittest.TestCase):
             'chat',  # F2
             'play_again',  # S1
             'register_claim',  # bug3
+            'set_peek',  # peek consent
         }
         self.assertEqual(set(GameConsumer.DISPATCH), expected)
 

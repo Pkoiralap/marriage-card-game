@@ -98,6 +98,11 @@ export class GameController {
             // a GESTURE action which handleAction maps to the right avatar slot.
             onGesture: (gesture) => {
                 if (this.socket) this.socket.sendGesture(gesture);
+            },
+            // Peek: toggle whether my RIGHT neighbour may rotate the table to see
+            // my hand. Server refreshes so the change takes effect immediately.
+            onTogglePeek: (allow) => {
+                if (this.socket) this.socket.setPeek(allow);
             }
         });
         this.renderer = null;
@@ -709,6 +714,13 @@ export class GameController {
         this.renderer.updateDeck(this.game.stockPileCount);
         this.renderer.updateChoiceCard(this.game.visibles);
         this.renderer.addOpponents(this.getOpponentAvatarSeeds());
+
+        // Peek: render opponents' held fans live. The left neighbour (rendered at
+        // the last/screen-left opponent slot) shows real faces when they've
+        // consented — state.peek_hand carries their hand, else null -> backs.
+        const numOpp = Math.max(0, this.game.players.length - 1);
+        this.renderer.updateOpponentHands(numOpp, numOpp - 1, state.peek_hand || null);
+        if (this.ui.setPeekState) this.ui.setPeekState(!!state.peek_allowed);
 
         if (state.maal_card) {
             this.game.maalCard = state.maal_card;

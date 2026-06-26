@@ -138,6 +138,10 @@ class Player(models.Model):
     turn_count = models.IntegerField(default=0)
     is_joined = models.BooleanField(default=False)   # a client is connected right now
     has_owner = models.BooleanField(default=False)   # claimed at least once (set once, never cleared)
+    # Peek: when True this player consents to their RIGHT neighbour seeing their
+    # hand (the right neighbour can rotate the table to glance at it). Toggleable
+    # mid-game; only the right neighbour's client ever receives the real cards.
+    allow_peek = models.BooleanField(default=False)
     avatar = models.IntegerField(default=random_avatar)  # which procedural avatar preset to render
     created_at = models.DateTimeField(auto_now_add=True, null=True)
 

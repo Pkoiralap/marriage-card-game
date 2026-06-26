@@ -101,6 +101,16 @@ export class UIManager {
             }
         });
 
+        // Peek: toggle whether my right neighbour may rotate the table to see my
+        // hand. Optimistically flip the label; the server refresh confirms via
+        // setPeekState(). `this._peekAllowed` mirrors the current consent.
+        this._peekAllowed = false;
+        document.getElementById('peek-toggle-btn')?.addEventListener('click', () => {
+            const next = !this._peekAllowed;
+            this.setPeekState(next);
+            if (this.callbacks.onTogglePeek) this.callbacks.onTogglePeek(next);
+        });
+
         // F1: emote menu. Toggle opens the grid; each gesture button fires the
         // onGesture callback (wired to SocketManager.sendGesture) and closes it.
         const emoteControls = document.getElementById('emote-controls');
@@ -400,6 +410,19 @@ export class UIManager {
     setClaimReady(ready) {
         const btn = document.getElementById('confirm-claim-btn');
         if (btn) btn.style.display = ready ? 'block' : 'none';
+    }
+
+    // Peek: reflect the current consent on the toggle button. `allow` true means
+    // my right neighbour can see my hand (so the button offers to hide it).
+    setPeekState(allow) {
+        this._peekAllowed = !!allow;
+        const btn = document.getElementById('peek-toggle-btn');
+        if (!btn) return;
+        btn.textContent = this._peekAllowed ? '🐵 Showing hand' : '🙈 Hide hand';
+        btn.title = this._peekAllowed
+            ? 'Your right neighbour can rotate the table to see your hand — click to hide'
+            : 'Let your right neighbour rotate the table to see your hand';
+        btn.classList.toggle('peek-on', this._peekAllowed);
     }
 
     setPhase(phase, showAllowed, turnCount) {

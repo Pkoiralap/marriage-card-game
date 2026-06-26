@@ -78,6 +78,7 @@ class GameConsumer(AsyncWebsocketConsumer):
 
         'gesture':           ('gesture',           ('player_name', 'gesture')),  # F1
         'chat':              ('chat',              ('player_name', 'phrase_id')),  # F2
+        'set_peek':          ('set_peek',          ('player_name', 'allow')),  # peek consent
         'play_again':        ('play_again',        ('player_name',)),  # S1
     }
 
@@ -393,6 +394,15 @@ class GameConsumer(AsyncWebsocketConsumer):
             ctx.player.hand = hand
             await sync_to_async(ctx.player.save)()
             # No broadcast: only the reordering player cares about their own order.
+
+    async def set_peek(self, player_name, allow):
+        """Peek consent toggle: when on, this player's RIGHT neighbour may rotate
+        the table to see this hand. Refresh so the neighbour's client gets (or
+        loses) the real cards immediately. Changeable any time mid-game."""
+        ctx = await self._load(player_name)
+        ctx.player.allow_peek = bool(allow)
+        await sync_to_async(ctx.player.save)(update_fields=['allow_peek'])
+        await self.broadcast_refresh()
 
     async def register_sequence(self, player_name, sequence_id, card_indices):
         ctx = await self._load(player_name)
@@ -969,7 +979,21 @@ class GameConsumer(AsyncWebsocketConsumer):
             'has_shown': len([s for s in p.shown_sequences if s]) >= 3,
             'avatar': p.avatar,
             'points': p.points,  # S1: cumulative score across rounds
+            'allow_peek': p.allow_peek,  # consents to right-neighbour peeking
         } for p in players_models]
+
+        # Peek: a player may rotate the table to glance at their LEFT neighbour's
+        # hand, but only if that neighbour consented (allow_peek). Seats are
+        # ordered by created_at; the left neighbour is seat (me+1) % N — which the
+        # client renders at its last (screen-left) opponent slot. Only THIS
+        # client receives those real cards, so the consent stays one-directional.
+        N = len(players_models)
+        seat_index = next((i for i, p in enumerate(players_models) if p.id == player.id), 0)
+        peek_hand = None
+        if N > 1:
+            left_neighbour = players_models[(seat_index + 1) % N]
+            if left_neighbour.allow_peek:
+                peek_hand = left_neighbour.hand
 
         has_shown_all = len([s for s in player.shown_sequences if s]) >= 3
         visible_maal = game.maal_card if has_shown_all else None
@@ -996,6 +1020,10 @@ class GameConsumer(AsyncWebsocketConsumer):
             'turn_timeout_seconds': self.TURN_TIMEOUT_SECONDS,
             'round_number': game.round_number,  # S1
             'is_active': game.is_active,  # S1
+            # Peek: my own consent (drives the toggle button) + my left
+            # neighbour's real hand when they've consented (else None -> backs).
+            'peek_allowed': player.allow_peek,
+            'peek_hand': peek_hand,
         }
 
         await self.send(text_data=json.dumps({

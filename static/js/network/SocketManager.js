@@ -98,6 +98,11 @@ export class SocketManager {
         this.send({ type: 'gesture', player_name: this.playerName, gesture: gesture });
     }
 
+    // Peek: consent to (or revoke) my right neighbour seeing my hand.
+    setPeek(allow) {
+        this.send({ type: 'set_peek', player_name: this.playerName, allow: !!allow });
+    }
+
     // F2: send a quick-chat phrase (validated server-side against CHAT_PHRASES).
     sendChat(phraseId) {
         this.send({ type: 'chat', player_name: this.playerName, phrase_id: phraseId });

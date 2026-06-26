@@ -13,13 +13,18 @@ export class Renderer {
         this.avatars = [];   // procedural opponent avatars (idle-animated each frame)
 
         this.cardsGroup = new THREE.Group();
-        this.opponentsGroup = new THREE.Group();
+        this.opponentsGroup = new THREE.Group();      // avatars (sig-gated rebuild)
+        this.opponentFansGroup = new THREE.Group();   // their held card fans (live)
         this.deckGroup = new THREE.Group();
         this.animationGroup = new THREE.Group();
         this.scene.add(this.cardsGroup);
         this.scene.add(this.opponentsGroup);
+        this.scene.add(this.opponentFansGroup);
         this.scene.add(this.deckGroup);
         this.scene.add(this.animationGroup);
+
+        // Peek: GPU resources for the opponent fans, disposed on each rebuild.
+        this._oppFanDisposables = [];
 
         this.initCamera();
         this.initRenderer();
@@ -36,9 +41,38 @@ export class Renderer {
         const aspect = window.innerWidth / window.innerHeight;
         const d = 17;
         this.camera = new THREE.OrthographicCamera(-d * aspect, d * aspect, d, -d, 1, 1000);
+
+        // Peek/orbit: the camera sits on a circle (fixed height + xz-radius)
+        // around a look target. The player can drag empty table space to orbit
+        // the azimuth a little (to glance at the left neighbour's hand) within a
+        // clamped range. The DEFAULT (base) azimuth is the original (26,21,26).
+        this._camTarget = new THREE.Vector3(0, 5, 0);
+        this._camHeight = 21;
+        this._camRadiusXZ = Math.hypot(26, 26);          // 36.77
+        this._camAzimuthBase = Math.atan2(26, 26);       // 45° in the xz-plane
+        this._camAzimuth = this._camAzimuthBase;
+        this._camAzimuthLimit = 0.5;                     // ~±28° of glance
+        // Fans orient to the BASE viewpoint (not the live camera) so a glance
+        // doesn't make them flip/re-face — they read like a held hand from here.
+        this._baseCamPos = new THREE.Vector3(26, 21, 26);
+
         this.camera.position.set(26, 21, 26);
-        this.camera.lookAt(0, 5, 0);
+        this.camera.lookAt(this._camTarget);
     }
+
+    // Peek/orbit: set the camera's azimuth (clamped to a small glance range).
+    setCameraAzimuth(phi) {
+        const lo = this._camAzimuthBase - this._camAzimuthLimit;
+        const hi = this._camAzimuthBase + this._camAzimuthLimit;
+        this._camAzimuth = Math.max(lo, Math.min(hi, phi));
+        const x = Math.cos(this._camAzimuth) * this._camRadiusXZ;
+        const z = Math.sin(this._camAzimuth) * this._camRadiusXZ;
+        this.camera.position.set(x, this._camHeight, z);
+        this.camera.lookAt(this._camTarget);
+    }
+
+    orbitCamera(deltaPhi) { this.setCameraAzimuth(this._camAzimuth + deltaPhi); }
+    resetCameraView() { this.setCameraAzimuth(this._camAzimuthBase); }
 
     initRenderer() {
         this.threeRenderer = new THREE.WebGLRenderer({ antialias: true });
@@ -403,7 +437,6 @@ export class Renderer {
             this.opponentsGroup.remove(this.opponentsGroup.children[i]);
         }
 
-        const backTexture = createCardBackTexture(this.threeRenderer);
         for (let i = 0; i < numOpponents; i++) {
             const pos = this.getOpponentPosition(i, numOpponents);
 
@@ -412,52 +445,90 @@ export class Renderer {
             // Bug 1: face the player's camera (not the table centre) so the
             // player sees the opponents' faces at eye level.
             avatar.group.rotation.y = Math.atan2(
-                this.camera.position.x - pos.x, this.camera.position.z - pos.z);
+                this._baseCamPos.x - pos.x, this._baseCamPos.z - pos.z);
             this.opponentsGroup.add(avatar.group);
             this.avatars.push(avatar);
-
-            this._addHeldCardFan(pos, backTexture);
         }
     }
 
-    // A static fan of card backs held UPRIGHT in front of an avatar, like a
-    // real hand of cards: all 21 backs pivoting about a grip point near the
-    // bottom, heavily overlapping so only a sliver of each card shows, turned
-    // by yaw to face the camera so the fan stays vertical (not lying flat).
-    _addHeldCardFan(pos, backTexture, count = 21) {
-        const geo = new THREE.BoxGeometry(1.6, 2.3, 0.04);
-        const mat = new THREE.MeshStandardMaterial({ map: backTexture });
+    // Peek: free the GPU resources behind the current opponent fans.
+    _disposeOpponentFans() {
+        for (let i = this.opponentFansGroup.children.length - 1; i >= 0; i--) {
+            this.opponentFansGroup.remove(this.opponentFansGroup.children[i]);
+        }
+        this._oppFanDisposables.forEach(d => d && d.dispose && d.dispose());
+        this._oppFanDisposables = [];
+    }
+
+    // Peek: (re)build every opponent's held card fan, live. Most show card
+    // BACKS; the one slot the player is allowed to peek (their consenting left
+    // neighbour, rendered at the last/screen-left slot) shows the real FACES,
+    // tracked in real time (rebuilt on each state update). `peekCards` is that
+    // neighbour's hand (array of {suit,number}) or null.
+    updateOpponentHands(numOpponents, peekSlot = -1, peekCards = null) {
+        this._disposeOpponentFans();
+        if (numOpponents < 1) return;
+
+        const backTexture = createCardBackTexture(this.threeRenderer);
+        const sharedGeo = new THREE.BoxGeometry(1.6, 2.3, 0.04);
+        const backMat = new THREE.MeshStandardMaterial({ map: backTexture });
+        this._oppFanDisposables.push(backTexture, sharedGeo, backMat);
+
+        for (let i = 0; i < numOpponents; i++) {
+            const pos = this.getOpponentPosition(i, numOpponents);
+            const faces = (i === peekSlot && peekCards && peekCards.length) ? peekCards : null;
+            this._buildHeldCardFan(pos, sharedGeo, backMat, faces);
+        }
+    }
+
+    // A static fan of cards held UPRIGHT in front of an avatar, like a real
+    // hand: backs (or real faces when `faces` is given) pivoting about a grip
+    // point near the bottom, heavily overlapping, turned by yaw to face the
+    // BASE viewpoint so the fan stays vertical and a small orbit doesn't flip it.
+    _buildHeldCardFan(pos, geo, backMat, faces = null) {
+        const count = faces ? faces.length : 21;
+        if (count <= 0) return;
 
         const up = new THREE.Vector3(0, 1, 0);
         // Anchor in front of the avatar (toward centre), raised to chest/face
         // height so it reads as cards held up in front of them.
         const anchor = new THREE.Vector3(pos.x * 0.72, 4.2, pos.z * 0.72);
-        // Face the camera but only by yaw, so the fan stays vertical/upright.
-        const toCam = new THREE.Vector3(this.camera.position.x - anchor.x, 0, this.camera.position.z - anchor.z).normalize();
+        // Yaw toward the base viewpoint (kept stable across orbit).
+        const toCam = new THREE.Vector3(this._baseCamPos.x - anchor.x, 0, this._baseCamPos.z - anchor.z).normalize();
         const right = new THREE.Vector3().crossVectors(up, toCam).normalize();   // horizontal
         const basis = new THREE.Matrix4().makeBasis(right, up, toCam);
         const baseQuat = new THREE.Quaternion().setFromRotationMatrix(basis);
 
         // Pivot/grip sits below the anchor by `radius`; each card rotates about
-        // it. Small per-card angle so all 21 fit in a graceful ~80deg arc with
-        // a real hand's tight overlap (only a strip of each back is visible).
+        // it. Small per-card angle so all the cards fit in a graceful ~80deg arc
+        // with a real hand's tight overlap (only a strip of each card shows).
         const radius = 5.6;     // grip-to-centre distance (controls arc curvature)
         const spread = 0.072;   // radians between adjacent cards
         const mid = (count - 1) / 2;
         for (let j = 0; j < count; j++) {
             const a = (j - mid) * spread;
+
+            let mat = backMat;
+            if (faces) {
+                const cd = faces[j];
+                const color = (cd.suit === 'HEART' || cd.suit === 'DIAMOND') ? 'red' : 'black';
+                const tex = createCardTexture(cd.number, cd.suit, color, this.threeRenderer);
+                mat = new THREE.MeshStandardMaterial({ map: tex });
+                this._oppFanDisposables.push(tex, mat);
+            }
+
             const card = new THREE.Mesh(geo, mat);
             // Upright arc in the (right, up) plane: centre highest, edges lower.
             card.position.copy(anchor)
                 .addScaledVector(right, radius * Math.sin(a))
                 .addScaledVector(up, radius * (Math.cos(a) - 1))
-                .addScaledVector(toCam, j * 0.012);  // layer toward camera, avoid z-fight
-            // Stand upright facing the camera, then splay each card by rolling it
-            // about its own normal.
+                .addScaledVector(toCam, j * 0.012);  // layer toward viewer, avoid z-fight
+            // Stand upright facing the viewpoint, then splay each card by rolling
+            // it about its own normal.
             const roll = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), -a);
             card.quaternion.copy(baseQuat).multiply(roll);
             card.castShadow = true;
-            this.opponentsGroup.add(card);
+            this.opponentFansGroup.add(card);
         }
     }
 

@@ -19,6 +19,12 @@ export class InputHandler {
         this.selectedIndices = new Set();
         this.registeredIndices = new Set(); // Indices of cards already in a sequence
         
+        // Peek/orbit: dragging empty table space rotates the viewpoint a little
+        // (to glance at the left neighbour's hand). Independent of card drags.
+        this.cameraDragging = false;
+        this._dragStartX = 0;
+        this._camStartAzimuth = 0;
+
         // Ghost card for dragging from source
         this.ghostCard = null;
         this.dragSource = null; // 'deck' or 'choice'
@@ -164,6 +170,14 @@ export class InputHandler {
         if (this.usingTouch) return;  // touch device: ignore synthesized mouse
         if (event.cancelable) event.preventDefault();
         const p = this.getEventPoint(event);
+
+        // Peek/orbit: drag empty space horizontally to rotate the view (clamped).
+        if (this.cameraDragging) {
+            const dx = p.x - this._dragStartX;
+            this.renderer.setCameraAzimuth(this._camStartAzimuth + dx * 0.004);
+            return;
+        }
+
         this.mouse.x = (p.x / window.innerWidth) * 2 - 1;
         this.mouse.y = -(p.y / window.innerHeight) * 2 + 1;
 
@@ -279,6 +293,15 @@ export class InputHandler {
                 }
             }
         }
+
+        // Peek/orbit: nothing was grabbed -> dragging empty space rotates the
+        // viewpoint (so the player can glance at the left neighbour's hand).
+        // Allowed any time, even off-turn.
+        if (!this.isDragging && !this.ghostCard) {
+            this.cameraDragging = true;
+            this._dragStartX = p.x;
+            this._camStartAzimuth = this.renderer._camAzimuth;
+        }
     }
 
     createGhostCard(sourceMesh) {
@@ -308,6 +331,9 @@ export class InputHandler {
 
     onMouseUp(event) {
         if (this.usingTouch) return;  // touch device: ignore synthesized mouse
+        // Peek/orbit: end a viewpoint drag (the new angle persists so the glance
+        // stays until the player drags back).
+        if (this.cameraDragging) { this.cameraDragging = false; return; }
         if (this.isDragging && this.draggedCardMesh) {
             const oldIndex = this.draggedCardMesh.userData.index;
 
