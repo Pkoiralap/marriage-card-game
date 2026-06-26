@@ -307,11 +307,27 @@ export class InputHandler {
         if (this.usingTouch) return;  // touch device: ignore synthesized mouse
         if (this.isDragging && this.draggedCardMesh) {
             const oldIndex = this.draggedCardMesh.userData.index;
-            const cardPos2D = new THREE.Vector2(this.draggedCardMesh.position.x, this.draggedCardMesh.position.z);
+
+            // The dragged card is locked to a camera-facing plane, so with the
+            // tilted (eye-level) camera its world x,z barely move toward the
+            // choice pile as you drag up-screen — the card mostly rises in Y.
+            // Testing the card's own x,z therefore never registers a discard.
+            // Instead, project the CURSOR onto the table (y=0) to find where the
+            // player is actually aiming the drop.
+            const p = this.getEventPoint(event);
+            this.mouse.x = (p.x / window.innerWidth) * 2 - 1;
+            this.mouse.y = -(p.y / window.innerHeight) * 2 + 1;
+            this.raycaster.setFromCamera(this.mouse, this.renderer.camera);
+            const tableHit = new THREE.Vector3();
+            const aimed = this.raycaster.ray.intersectPlane(
+                new THREE.Plane(new THREE.Vector3(0, 1, 0), 0), tableHit);
+            const aim2D = aimed
+                ? new THREE.Vector2(tableHit.x, tableHit.z)
+                : new THREE.Vector2(this.draggedCardMesh.position.x, this.draggedCardMesh.position.z);
             const choicePos2D = new THREE.Vector2(CHOICE_POS.x, CHOICE_POS.z);
-            
+
             // Only allow discard if it's the correct turn step
-            if (this.game.turnStep === 'DISCARD' && cardPos2D.distanceTo(choicePos2D) < DISCARD_ZONE_RADIUS) {
+            if (this.game.turnStep === 'DISCARD' && aim2D.distanceTo(choicePos2D) < DISCARD_ZONE_RADIUS) {
                 this.isWaitingForServer = true;
                 this.lockedDiscardMesh = this.draggedCardMesh;
                 this.callbacks.discardCard(oldIndex, this.draggedCardMesh.position.clone(), this.draggedCardMesh.quaternion.clone());
