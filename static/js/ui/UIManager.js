@@ -87,6 +87,11 @@ export class UIManager {
             if (this.callbacks.onClaimGame) this.callbacks.onClaimGame();
         });
 
+        // bug3: confirm the actual claim once only 1 card is left ungrouped.
+        document.getElementById('confirm-claim-btn')?.addEventListener('click', () => {
+            if (this.callbacks.onConfirmClaim) this.callbacks.onConfirmClaim();
+        });
+
         document.getElementById('confirm-maal-btn')?.addEventListener('click', () => {
             if (this.selectedMaalCardId !== null && this.callbacks.onConfirmMaal) {
                 this.callbacks.onConfirmMaal(this.selectedMaalCardId);
@@ -379,6 +384,22 @@ export class UIManager {
     hideSequenceControls() {
         this.gameControls.style.display = 'flex';
         this.sequenceControls.style.display = 'none';
+        this.setClaimReady(false);
+        const v = document.getElementById('validate-seq-btn');
+        if (v) v.textContent = 'Validate Sequence';
+    }
+
+    // bug3: in claim mode, relabel Validate and toggle the "Claim Now!" button.
+    enterClaimControls() {
+        this.showSequenceControls();
+        const v = document.getElementById('validate-seq-btn');
+        if (v) v.textContent = 'Validate Group';
+        this.setClaimReady(false);
+    }
+
+    setClaimReady(ready) {
+        const btn = document.getElementById('confirm-claim-btn');
+        if (btn) btn.style.display = ready ? 'block' : 'none';
     }
 
     setPhase(phase, showAllowed, turnCount) {
@@ -388,7 +409,9 @@ export class UIManager {
         const claimGameBtn = document.getElementById('claim-game-btn');
 
         if (phase === 'MAAL_REVEALED') {
-            if (showSeqBtn) showSeqBtn.style.display = 'block'; // Can still show sequences in phase 2
+            // bug3: after the maal is revealed, "Show Sequence" is replaced by the
+            // claim flow — you organise your hand into melds and claim.
+            if (showSeqBtn) showSeqBtn.style.display = 'none';
             if (showTunBtn) showTunBtn.style.display = 'none';
             if (showDubBtn) showDubBtn.style.display = 'none';
             if (claimGameBtn) claimGameBtn.style.display = 'block';

@@ -23,9 +23,9 @@ from .logic import (
 )
 # S3: pure auto-act decision for the turn timer (PICK -> draw, DISCARD -> safe card).
 from .logic import auto_act_decision
-from .rules import Card, is_sequence, is_tunnela, is_dublee
+from .rules import Card, is_sequence, is_tunnela, is_dublee, is_valid_meld
 # S1: real claim validation + round scoring over the whole holding.
-from .rules import is_winning_claim, round_scores
+from .rules import can_claim, round_scores  # bug3: claim accepts a 1-card discard
 from . import emotes  # F1: gesture allowlist (is_valid_gesture) + F2: quick-chat phrases
 
 logger = logging.getLogger(__name__)
@@ -71,6 +71,8 @@ class GameConsumer(AsyncWebsocketConsumer):
         'cancel_sequence':   ('cancel_sequence',   ('player_name',)),
         'reorder_hand':      ('reorder_hand',      ('player_name', 'old_index', 'new_index')),
         'claim_game':        ('claim_game',        ('player_name',)),
+        'register_claim':    ('register_claim_group', ('player_name', 'card_indices')),  # bug3
+
         'gesture':           ('gesture',           ('player_name', 'gesture')),  # F1
         'chat':              ('chat',              ('player_name', 'phrase_id')),  # F2
         'play_again':        ('play_again',        ('player_name',)),  # S1
@@ -355,8 +357,28 @@ class GameConsumer(AsyncWebsocketConsumer):
         ctx = await self._load(player_name, with_players=True)
         if self._is_turn(ctx):
             self._cancel_turn_timer()  # S3: action taken in time
-            await self._perform_discard(ctx.game, ctx.player, ctx.index, 'player_discard', card_index)
+            ok = await self._perform_discard(ctx.game, ctx.player, ctx.index, 'player_discard', card_index)
             await self._schedule_turn_timer()  # S3: arm next seat's deadline
+            if ok:
+                # Bug 2: a qualified player (3 sequences shown) who didn't get the
+                # first-turn maal offer can view/select the maal only now, after
+                # discarding.
+                await self._maybe_offer_maal_after_discard(player_name)
+
+    async def _maybe_offer_maal_after_discard(self, player_name):
+        game = await sync_to_async(Game.objects.get)(code=self.room_name)
+        if game.maal_card is not None:
+            return  # maal already chosen
+        player = await sync_to_async(Player.objects.get)(name=player_name, game=game)
+        if len([s for s in player.shown_sequences if s]) >= 3:
+            await self.broadcast_action({
+                'type': 'SHOW_SEQUENCE_SUCCESS',
+                'player_name': player_name,
+                'sequence_id': 3,
+                'all_sequences_done': True,
+                'needs_maal_selection': True,
+                'unseen_cards': game.deck,
+            })
 
     async def reorder_hand(self, player_name, old_index, new_index):
         ctx = await self._load(player_name)
@@ -394,7 +416,10 @@ class GameConsumer(AsyncWebsocketConsumer):
             player_model.hand = [c for c in player_model.hand if c['id'] not in registered_ids]
 
         await sync_to_async(player_model.save)()
-        needs_maal = all_done and ctx.game.maal_card is None
+        # Bug 2: the maal can be viewed/selected WITHOUT discarding only on the
+        # player's very first turn (turn_count == 0). On any later turn the player
+        # must discard first — that offer is made from discard_card below.
+        needs_maal = all_done and ctx.game.maal_card is None and player_model.turn_count == 0
 
         await self.broadcast_action({
             'type': 'SHOW_SEQUENCE_SUCCESS',
@@ -483,12 +508,41 @@ class GameConsumer(AsyncWebsocketConsumer):
         player = ctx.player
         jokers = jokers_from_maal(player.hand, ctx.game.maal_card)
         shown = [grp for grp in (player.shown_sequences or []) if grp]
-        if not is_winning_claim(shown, player.hand, jokers):
+        # Bug 3: a valid claim leaves exactly ONE card to discard; the rest must
+        # meld (dirty/joker sequences allowed via `jokers`). The old check judged
+        # the whole holding with no card set aside, so it never passed (22 cards
+        # aren't divisible by the meld size) — hence "no win" for everyone.
+        if not can_claim(shown, player.hand, jokers):
             return await self.send_reject(
                 'CLAIM_FAILED',
-                "Your hand isn't a complete winning hand yet.")
+                "Not a winning hand yet — every card but one must form a valid set.")
 
         await self._finish_round(ctx.game, ctx.players, player.name)
+
+    async def register_claim_group(self, player_name, card_indices):
+        """Bug 3: validate one selected group during the claim flow (UX only).
+
+        Mirrors showing a sequence but accepts dirty/joker melds (sequence or
+        tunnela) so the player can organise their hand; the real win check is
+        done server-side in claim_game via can_claim. Replies to the acting
+        player so the client can highlight the validated cards.
+        """
+        ctx = await self._load(player_name)
+        cards, card_objs = self._select_cards(ctx.player.hand, card_indices)
+        if card_objs is None:
+            return await self.send_reject('CLAIM_GROUP_FAILED', "Invalid card selection.")
+        jokers = jokers_from_maal(ctx.player.hand, ctx.game.maal_card)
+        if not is_valid_meld(card_objs, jokers):
+            return await self.send_reject(
+                'CLAIM_GROUP_FAILED', "These cards don't form a valid set/sequence.")
+        await self.send(text_data=json.dumps({'message': json.dumps({
+            'type': 'ai_action',
+            'action': {
+                'type': 'CLAIM_GROUP_SUCCESS',
+                'player_name': player_name,
+                'card_ids': [c['id'] for c in cards],
+            },
+        })}))
 
     # S1: end the round — compute cumulative scores, persist, broadcast results.
     async def _finish_round(self, game, players, winner_name):

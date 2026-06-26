@@ -65,6 +65,27 @@ def is_winning_claim(shown_groups, hand, jokers: set[int] | None = None,
     return is_winning_hand(flat, jokers, min_pure=min_pure, meld_size=meld_size)
 
 
+def can_claim(shown_groups, hand, jokers: set[int] | None = None,
+              min_pure: int = 1, meld_size: int = 3) -> bool:
+    """True if the player can claim by setting aside exactly ONE card.
+
+    Marriage wins by melding everything and discarding the final card, so a
+    claim is valid when there exists one card to drop from ``hand`` such that
+    the rest of the holding (shown melds + remaining hand) forms a winning
+    hand. Dirty (joker-filled) sequences count — ``jokers`` is the maal-derived
+    joker-id set. ``min_pure`` pure sequence(s) are still required overall.
+    """
+    flat_shown = [c for group in (shown_groups or []) for c in group]
+    hand = list(hand or [])
+    if not hand:
+        return False
+    for i in range(len(hand)):
+        rest = flat_shown + hand[:i] + hand[i + 1:]
+        if is_winning_hand(rest, jokers, min_pure=min_pure, meld_size=meld_size):
+            return True
+    return False
+
+
 def round_penalty(shown_groups, hand, jokers: set[int] | None = None,
                   point_values: dict | None = None, meld_size: int = 3,
                   max_penalty: int | None = DEFAULT_MAX_ROUND_PENALTY) -> int:

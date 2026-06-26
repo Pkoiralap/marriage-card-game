@@ -60,6 +60,9 @@ export class Card {
         ];
 
         const mesh = new THREE.Mesh(geometry, materials);
+        // Bug 1: the player's own hand cards render a bit smaller (these Card
+        // meshes are hand-only; table/opponent cards are built in the Renderer).
+        mesh.scale.setScalar(0.7);
         mesh.userData.card = this;
         return mesh;
     }

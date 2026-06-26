@@ -90,6 +90,7 @@ class DispatchTests(unittest.TestCase):
             'gesture',  # F1
             'chat',  # F2
             'play_again',  # S1
+            'register_claim',  # bug3
         }
         self.assertEqual(set(GameConsumer.DISPATCH), expected)
 
@@ -1181,7 +1182,7 @@ class ClaimGameValidationTests(TransactionTestCase):
         return game, player
 
     def test_valid_claim_ends_round_and_scores(self):
-        cards = _winning_21()
+        cards = _winning_21() + [_card("DIAMOND", "2", 999)]  # bug3: +1 card to discard
         game, player = self._game(hand=cards)
         c = self._consumer(game.code)
         self._run(c.claim_game('Alice'))
@@ -1201,7 +1202,8 @@ class ClaimGameValidationTests(TransactionTestCase):
         cards = _winning_21()
         # Three sequences/tunnelas already shown; the rest concealed.
         game, player = self._game(
-            hand=cards[9:], shown=[cards[0:3], cards[3:6], cards[6:9]])
+            hand=cards[9:] + [_card("DIAMOND", "2", 999)],  # bug3: +1 card to discard
+            shown=[cards[0:3], cards[3:6], cards[6:9]])
         c = self._consumer(game.code)
         self._run(c.claim_game('Alice'))
         self.assertEqual(c.rejects, [])
@@ -1297,7 +1299,7 @@ class ClaimGameValidationTests(TransactionTestCase):
         self.assertEqual(c.rejects[0][0], 'CLAIM_FAILED')
 
     def test_loser_points_accumulate(self):
-        cards = _winning_21()
+        cards = _winning_21() + [_card("DIAMOND", "2", 999)]  # bug3: +1 card to discard
         game = Game.objects.create(
             num_players=2, code=Game.generate_code(), deck=[], visibles=[],
             turn_step='DISCARD', turn_player_index=0)

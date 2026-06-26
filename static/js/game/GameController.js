@@ -31,42 +31,66 @@ export class GameController {
         this.ui = new UIManager({
             startGame: (gameId, playerName) => this.startGame(gameId, playerName),
             onShowSequenceMode: (enabled, mode = 'SEQUENCE') => {
-                this.showMode = mode;
+                if (enabled) this.showMode = mode;
                 if (this.inputHandler) this.inputHandler.setSelectionMode(enabled);
-                if (!enabled) this.socket.cancelSequence();
+                if (!enabled) {
+                    // Cancel: in claim mode just drop the validated groups (do NOT
+                    // send cancel_sequence — that would clear the shown sequences).
+                    if (this.showMode === 'CLAIM') {
+                        this.claimedCardIds.clear();
+                        this.syncRegisteredIndices();
+                    } else {
+                        this.socket.cancelSequence();
+                    }
+                    this.showMode = 'SEQUENCE';
+                }
             },
             onRegisterSequence: () => {
-                if (this.inputHandler) {
-                    const indices = this.inputHandler.getSelectedIndices();
-                    if (this.showMode === 'SEQUENCE') {
-                        if (indices.length < 3 || indices.length > 5) {
-                            this.notify("Select 3-5 cards for a sequence", 'warn');
-                            return;
-                        }
-                        const sequenceId = (this.game.me.shownSequences ? this.game.me.shownSequences.length : 0) + 1;
-                        this.socket.registerSequence(sequenceId, indices);
-                    } else if (this.showMode === 'TUNNELA') {
-                        if (indices.length !== 3) {
-                            this.notify("Select exactly 3 cards for a tunnela", 'warn');
-                            return;
-                        }
-                        this.socket.registerTunnela(indices);
-                    } else if (this.showMode === 'DUBLEE') {
-                        if (indices.length !== 2) {
-                            this.notify("Select exactly 2 cards for a dublee", 'warn');
-                            return;
-                        }
-                        this.socket.registerDublee(indices);
+                if (!this.inputHandler) return;
+                const indices = this.inputHandler.getSelectedIndices();
+                if (this.showMode === 'CLAIM') {
+                    // bug3: validate one meld group toward a claim (dirty OK).
+                    if (indices.length < 2 || indices.length > 5) {
+                        this.notify("Select 2-5 cards for a set/sequence", 'warn');
+                        return;
                     }
+                    this.socket.registerClaim(indices);
+                } else if (this.showMode === 'SEQUENCE') {
+                    if (indices.length < 3 || indices.length > 5) {
+                        this.notify("Select 3-5 cards for a sequence", 'warn');
+                        return;
+                    }
+                    const sequenceId = (this.game.me.shownSequences ? this.game.me.shownSequences.length : 0) + 1;
+                    this.socket.registerSequence(sequenceId, indices);
+                } else if (this.showMode === 'TUNNELA') {
+                    if (indices.length !== 3) {
+                        this.notify("Select exactly 3 cards for a tunnela", 'warn');
+                        return;
+                    }
+                    this.socket.registerTunnela(indices);
+                } else if (this.showMode === 'DUBLEE') {
+                    if (indices.length !== 2) {
+                        this.notify("Select exactly 2 cards for a dublee", 'warn');
+                        return;
+                    }
+                    this.socket.registerDublee(indices);
                 }
             },
             onConfirmMaal: (cardId) => {
                 this.socket.confirmMaal(cardId);
             },
+            // bug3: "Claim Game" now opens an interactive flow — organise your
+            // hand into validated melds (dirty sequences allowed via the maal
+            // jokers). When all but one card is grouped, "Claim Now!" appears.
             onClaimGame: () => {
-                // S1: the server now validates the full hand (shown melds +
-                // concealed) via the rules engine and rejects bad claims with a
-                // CLAIM_FAILED message, so we just send it.
+                this.showMode = 'CLAIM';
+                this.claimedCardIds.clear();
+                this.syncRegisteredIndices();
+                if (this.inputHandler) this.inputHandler.setSelectionMode(true);
+                this.ui.enterClaimControls();
+                this.notify("Validate each set/sequence, leave 1 card, then Claim Now!", 'info');
+            },
+            onConfirmClaim: () => {
                 if (this.socket) this.socket.claimGame();
             },
             // F1: send a cosmetic gesture/emote. The server broadcasts it back as
@@ -90,7 +114,8 @@ export class GameController {
         // which animated the next player's pick before the prior discard had
         // landed on the board — cards appeared to fly to the wrong place.)
         this.eventQueue = [];
-        
+        this.claimedCardIds = new Set();  // bug3: card ids validated into claim melds
+
         // Check if there is a game_id in URL
         this.checkUrlForGame();
     }
@@ -258,8 +283,13 @@ export class GameController {
             
             const hand = this.game.me.hand;
             const registeredCards = this.game.me.shownSequences.flat();
-            const registeredIds = new Set(registeredCards.map(c => c.id));
-            
+            // bug3: claim-validated cards are also "locked" (highlighted, can't be
+            // re-selected) while building a claim.
+            const registeredIds = new Set([
+                ...registeredCards.map(c => c.id),
+                ...this.claimedCardIds,
+            ]);
+
             hand.forEach((card, index) => {
                 if (registeredIds.has(card.id)) {
                     this.inputHandler.registeredIndices.add(index);
@@ -398,9 +428,23 @@ export class GameController {
                     }
                 }
             }
+        } else if (action.type === 'CLAIM_GROUP_SUCCESS') {
+            // bug3: a meld group validated toward a claim. Lock those cards in
+            // (highlighted), clear the selection, and reveal "Claim Now!" once
+            // exactly one card remains ungrouped.
+            if (isMe) {
+                (action.card_ids || []).forEach(id => this.claimedCardIds.add(id));
+                this.inputHandler.selectedIndices.clear();
+                this.syncRegisteredIndices();
+                const remaining = this.game.me.hand.length - this.claimedCardIds.size;
+                this.ui.setClaimReady(remaining === 1);
+                this.logMessage(remaining === 1
+                    ? `Group validated — 1 card left, you can Claim Now!`
+                    : `Group validated — ${remaining} cards left to group.`);
+            }
         } else if (action.type.endsWith('_FAILED')) {
-            // Server rejected a show (sequence/tunnela/dublee). Keep the player
-            // in selection mode with their cards still selected so they can fix it.
+            // Server rejected a show/claim group. Keep the player in selection
+            // mode with their cards still selected so they can fix it.
             this.notify(action.reason || "That selection isn't valid.", 'error');
         } else if (action.type === 'MAAL_SELECTED') {
             this.game.maalCard = action.card;
@@ -447,6 +491,10 @@ export class GameController {
             // only; mapped player->slot like getOpponentAvatarSeeds) AND log it.
             this.handleChat(action);
         }
+
+        // Keep the queue draining for non-animating actions (e.g. CLAIM_GROUP_*,
+        // which have no following state refresh). No-op while an animation runs.
+        if (!this.isAnimating) this.processQueues();
     }
 
     // F2: render an incoming CHAT action — speech bubble + chat log entry.

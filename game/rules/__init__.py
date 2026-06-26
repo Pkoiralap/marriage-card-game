@@ -31,6 +31,7 @@ from .scoring import (
     DEFAULT_POINT_VALUES,
     card_points,
     hand_points,
+    can_claim,  # bug3
     is_winning_claim,  # S1
     round_penalty,  # S1
     round_scores,  # S1
@@ -51,5 +52,5 @@ __all__ = [
     # jokers (S2)
     "maal_joker_faces", "maal_joker_ids",
     # scoring/claim (S1)
-    "is_winning_claim", "round_penalty", "round_scores", "DEFAULT_MAX_ROUND_PENALTY",
+    "is_winning_claim", "can_claim", "round_penalty", "round_scores", "DEFAULT_MAX_ROUND_PENALTY",
 ]

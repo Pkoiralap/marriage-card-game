@@ -34,10 +34,12 @@ export class Renderer {
 
     initCamera() {
         const aspect = window.innerWidth / window.innerHeight;
-        const d = 18;
+        const d = 19;
         this.camera = new THREE.OrthographicCamera(-d * aspect, d * aspect, d, -d, 1, 1000);
-        this.camera.position.set(25, 40, 25);
-        this.camera.lookAt(0, 0, 0); 
+        // Bug 1: lower, more eye-level angle so the player looks across the table
+        // at the opponents (and the look target is raised to their head height).
+        this.camera.position.set(20, 28, 34);
+        this.camera.lookAt(0, 5, -4);
     }
 
     initRenderer() {
@@ -118,7 +120,7 @@ export class Renderer {
 
     onWindowResize() {
         const aspect = window.innerWidth / window.innerHeight;
-        const d = 14; 
+        const d = 19;   // bug 1: keep zoom consistent with initCamera
         this.camera.left = -d * aspect;
         this.camera.right = d * aspect;
         this.camera.top = d;
@@ -409,7 +411,10 @@ export class Renderer {
 
             const avatar = new Avatar(avatarSeeds[i]);
             avatar.group.position.set(pos.x, 0, pos.z);
-            avatar.group.rotation.y = Math.atan2(-pos.x, -pos.z);   // face table centre
+            // Bug 1: face the player's camera (not the table centre) so the
+            // player sees the opponents' faces at eye level.
+            avatar.group.rotation.y = Math.atan2(
+                this.camera.position.x - pos.x, this.camera.position.z - pos.z);
             this.opponentsGroup.add(avatar.group);
             this.avatars.push(avatar);
 

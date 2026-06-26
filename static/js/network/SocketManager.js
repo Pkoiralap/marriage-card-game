@@ -80,6 +80,11 @@ export class SocketManager {
         this.send({ type: 'claim_game', player_name: this.playerName });
     }
 
+    // bug3: validate one group of cards during the claim flow (dirty melds OK).
+    registerClaim(cardIndices) {
+        this.send({ type: 'register_claim', player_name: this.playerName, card_indices: cardIndices });
+    }
+
     // S1: start a fresh round in the same room (cumulative points preserved).
     playAgain() {
         this.send({ type: 'play_again', player_name: this.playerName });
