@@ -39,7 +39,7 @@ export class Renderer {
         // Bug 1: keep the centered diagonal (equal X and Z, like the original) so
         // the view stays centred, but LOWER the elevation to ~19deg so the player
         // looks across the table at the opponents at eye level instead of top-down.
-        this.camera.position.set(26, 13, 26);
+        this.camera.position.set(26, 15, 26);
         this.camera.lookAt(0, 5, 0);
     }
 
